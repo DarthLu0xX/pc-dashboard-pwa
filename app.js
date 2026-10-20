@@ -7,7 +7,7 @@
 
   const CFG = window.PC_CONFIG;
   const G = window.Graficas;
-  const TABS = ['operativo', 'medico', 'opiniones', 'info'];
+  const TABS = ['operativo', 'medico', 'opiniones', 'info', 'informe'];
   const INICIO = 'operativo';
   const TIMEOUT_MS = 25000;
   const fmt = new Intl.NumberFormat('es-MX');
@@ -337,6 +337,7 @@
         </div>
         <div class="activos" id="activos"></div>
         <div class="periodo-texto" id="periodo-texto"></div>
+        <button type="button" class="btn btn--informe" data-informe>${ICON.documento}Generar informe ejecutivo</button>
       </section>
       <div class="datos-vista" id="datos"></div>`;
   }
@@ -376,6 +377,7 @@
   }
 
   function enlazarFiltros(modulo) {
+    document.querySelector('[data-informe]').addEventListener('click', () => ir('informe'));
     document.querySelectorAll('[data-periodo]').forEach((b) =>
       b.addEventListener('click', () => {
         estado.periodo = b.dataset.periodo;
@@ -817,6 +819,67 @@
       </section>`;
   }
 
+  // Informe ejecutivo: ambos módulos con el periodo y la colonia seleccionados,
+  // más el periodo de comparación, para que informe.js redacte el documento.
+  async function obtener(p) {
+    const clave = claveCache(p);
+    try {
+      const data = await pedir('resumen', p);
+      guardar(clave, { ts: Date.now(), data });
+      return data;
+    } catch (e) {
+      const g = leer(clave);
+      if (g) return g.data;
+      throw e;
+    }
+  }
+
+  async function mostrarInforme() {
+    $vista.innerHTML = `
+      <div class="informe-barra no-imprimir">
+        <button type="button" class="btn btn--secundario" data-volver>‹ Volver</button>
+        <button type="button" class="btn" data-imprimir disabled>${ICON.documento}Guardar PDF</button>
+        <button type="button" class="btn btn--secundario" data-compartir disabled>Compartir</button>
+      </div>
+      <p class="informe-aviso no-imprimir">Incluye los módulos operativo y médico con el periodo${estado.colonia ? ' y la colonia' : ''} seleccionados en los filtros.</p>
+      <div id="informe-cont"><div class="esqueleto" style="height:520px"></div></div>`;
+    $vista.querySelector('[data-volver]').addEventListener('click', () => history.back());
+    const r = rango();
+    const ant = rangoAnterior(r);
+    ocupado(true);
+    try {
+      const base = { modulo: 'ambos', colonia: estado.colonia };
+      const [actual, previo] = await Promise.all([
+        obtener({ ...base, fecha_inicio: r.inicio, fecha_fin: r.fin }),
+        ant ? obtener({ ...base, fecha_inicio: ant.inicio, fecha_fin: ant.fin }) : Promise.resolve(null),
+      ]);
+      if (estado.tab !== 'informe') return;
+      const ctx = {
+        op: actual.operativos, med: actual.medicos,
+        opAnt: previo ? previo.operativos : null, medAnt: previo ? previo.medicos : null,
+        periodo: r, ant, colonia: estado.colonia,
+      };
+      document.getElementById('informe-cont').innerHTML = window.Informe.html(ctx);
+      const $imp = $vista.querySelector('[data-imprimir]');
+      const $comp = $vista.querySelector('[data-compartir]');
+      $imp.disabled = false;
+      $comp.disabled = false;
+      $imp.addEventListener('click', () => window.print());
+      $comp.addEventListener('click', async () => {
+        const texto = window.Informe.texto(ctx);
+        try {
+          if (navigator.share) await navigator.share({ title: 'Informe ejecutivo — Protección Civil MC', text: texto });
+          else { await navigator.clipboard.writeText(texto); $comp.textContent = 'Copiado ✓'; }
+        } catch { /* el usuario canceló */ }
+      });
+    } catch (e) {
+      if (estado.tab === 'informe') document.getElementById('informe-cont').innerHTML = errorHTML(e.message);
+      $vista.querySelector('[data-reintentar]')?.addEventListener('click', () => mostrarInforme());
+    } finally {
+      ocupado(false);
+    }
+  }
+
   let promptInstalar = null;
   function infoHTML() {
     const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
@@ -866,6 +929,7 @@
       cargarModulo(tab);
       return;
     }
+    if (tab === 'informe') { mostrarInforme(); return; }
     $vista.innerHTML = tab === 'opiniones' ? opinionesHTML() : infoHTML();
     if (tab === 'info') {
       $vista.querySelector('[data-instalar]')?.addEventListener('click', async () => {
@@ -883,6 +947,8 @@
 
   function ir(tab) {
     if (tab === estado.tab) { window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
+    if (tab === 'informe') { history.pushState({ tab }, '', '#informe'); render(tab); return; }
+    if (estado.tab === 'informe') { history.replaceState({ tab }, '', '#' + tab); render(tab); return; }
     if (estado.tab === INICIO) history.pushState({ tab }, '', '#' + tab);
     else if (tab === INICIO) { history.back(); return; }
     else history.replaceState({ tab }, '', '#' + tab);
