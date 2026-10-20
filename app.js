@@ -7,7 +7,7 @@
 
   const CFG = window.PC_CONFIG;
   const G = window.Graficas;
-  const TABS = ['operativo', 'medico', 'opiniones', 'info', 'informe'];
+  const TABS = ['operativo', 'medico', 'opiniones', 'informe'];
   const INICIO = 'operativo';
   const TIMEOUT_MS = 25000;
   const fmt = new Intl.NumberFormat('es-MX');
@@ -880,38 +880,6 @@
     }
   }
 
-  let promptInstalar = null;
-  function infoHTML() {
-    const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
-    return `
-      <section class="card">
-        ${titulo('Acerca de este tablero', ICON.documento)}
-        <ul class="info-lista">
-          <li>Es de <b>solo lectura</b>: muestra los reportes operativos y médicos registrados en el sistema de Protección Civil Magdalena Contreras.</li>
-          <li>Usa los filtros para elegir el periodo (o fechas exactas con <b>Fechas</b>), buscar un tipo de incidente escribiendo cualquier palabra, o una colonia.</li>
-          <li>Los datos se guardan en el celular: si no hay señal, verás la última información descargada.</li>
-          <li>Toca <b>↻</b> arriba a la derecha para traer lo más reciente.</li>
-        </ul>
-      </section>
-      <section class="card">
-        ${titulo('Instalar en el celular', ICON.botiquin)}
-        ${standalone
-          ? '<p class="vacio">Ya estás usando la app instalada.</p>'
-          : `${promptInstalar ? '<p><button type="button" class="btn" data-instalar>Instalar app</button></p>' : ''}
-             <ul class="info-lista">
-               <li><b>Android (Chrome):</b> menú ⋮ → <b>Instalar app</b> o <b>Agregar a la pantalla principal</b>.</li>
-               <li><b>iPhone (Safari):</b> botón Compartir → <b>Agregar a inicio</b>.</li>
-             </ul>`}
-      </section>
-      <section class="card">
-        <dl class="datos-lista">
-          <div><dt>Versión</dt><dd>${esc(CFG.VERSION)}</dd></div>
-          <div><dt>Servidor</dt><dd style="font-size:13px">${esc(API_BASE.replace(/^https?:\/\//, ''))}</dd></div>
-        </dl>
-        <p style="margin:16px 0 0"><button type="button" class="btn btn--secundario" data-borrar>Borrar datos guardados</button></p>
-      </section>`;
-  }
-
   /* ---------------- navegación ----------------
    * Las pestañas usan el historial del navegador para que el botón "atrás"
    * de Android regrese a Operativo en vez de cerrar la app, y desde
@@ -930,19 +898,7 @@
       return;
     }
     if (tab === 'informe') { mostrarInforme(); return; }
-    $vista.innerHTML = tab === 'opiniones' ? opinionesHTML() : infoHTML();
-    if (tab === 'info') {
-      $vista.querySelector('[data-instalar]')?.addEventListener('click', async () => {
-        promptInstalar.prompt();
-        await promptInstalar.userChoice;
-        promptInstalar = null;
-        render('info');
-      });
-      $vista.querySelector('[data-borrar]').addEventListener('click', () => {
-        Object.keys(localStorage).filter((k) => k.startsWith('pc.')).forEach((k) => localStorage.removeItem(k));
-        location.reload();
-      });
-    }
+    $vista.innerHTML = opinionesHTML();
   }
 
   function ir(tab) {
@@ -980,11 +936,6 @@
   });
   window.addEventListener('online', () => {
     if (estado.tab === 'operativo' || estado.tab === 'medico') cargarModulo(estado.tab, { forzar: true });
-  });
-  window.addEventListener('beforeinstallprompt', (e) => {
-    e.preventDefault();
-    promptInstalar = e;
-    if (estado.tab === 'info') render('info');
   });
 
   /* ---------------- arranque ---------------- */
