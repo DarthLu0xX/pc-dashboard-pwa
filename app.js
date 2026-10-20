@@ -1,4 +1,4 @@
-/* Tablero de solo lectura — PC Magdalena Contreras
+/* Tablero ejecutivo de solo lectura — PC Magdalena Contreras
  * Datos: /api/pwa/resumen/ y /api/pwa/catalogo/ del Django (PythonAnywhere).
  * Cada respuesta se guarda en localStorage para que la app abra sin internet.
  */
@@ -6,14 +6,14 @@
   'use strict';
 
   const CFG = window.PC_CONFIG;
+  const G = window.Graficas;
   const TABS = ['operativo', 'medico', 'opiniones', 'info'];
   const INICIO = 'operativo';
-  const TIMEOUT_MS = 20000;
+  const TIMEOUT_MS = 25000;
   const fmt = new Intl.NumberFormat('es-MX');
 
-  // ?api=http://127.0.0.1:8011 cambia el servidor (para pruebas); ?api= lo regresa al normal
+  // ?api=, ?token= y ?periodo= solo para pruebas en local
   const qs = new URLSearchParams(location.search);
-  // ?token= solo para pruebas en local (en GitHub Pages el token ya viene en config.js)
   if (qs.has('api')) guardar('pc.api', qs.get('api') || null);
   if (qs.has('token')) guardar('pc.token', qs.get('token') || null);
   if (qs.has('periodo')) guardar('pc.periodo', qs.get('periodo'));
@@ -24,14 +24,17 @@
   const estado = {
     tab: INICIO,
     periodo: leer('pc.periodo') || 'anio',
+    desde: leer('pc.desde') || '',
+    hasta: leer('pc.hasta') || '',
     colonia: leer('pc.colonia') || '',
-    tipo: { operativo: '', medico: '' },
+    tipo: { operativo: leer('pc.tipo.operativo'), medico: leer('pc.tipo.medico') },
+    vistaTipos: 'sub',
     catalogo: leer('pc.catalogo'),
+    datos: null,
     cargando: false,
   };
 
   const $vista = document.getElementById('vista');
-  const $estado = document.getElementById('estado');
   const $btnActualizar = document.getElementById('btn-actualizar');
   const $tabs = [...document.querySelectorAll('.tabbar button')];
 
@@ -46,48 +49,129 @@
   /* ---------------- utilidades ---------------- */
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const num = (n) => fmt.format(n || 0);
+  const cuenta = (n, palabra = 'servicio') => `${num(n)} ${n === 1 ? palabra : `${palabra}s`}`;
   const vacioSi = (v, txt = 'No especificado') => (v == null || String(v).trim() === '' ? txt : v);
 
   const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
-  function fechaCorta(iso) {
+  const MESES_LARGOS = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+  const DIAS_CORTOS = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'];
+  const aFecha = (iso) => { const [y, m, d] = iso.split('-').map(Number); return new Date(y, m - 1, d); };
+  const isoLocal = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  function fechaCorta(iso, conAnio = true) {
     if (!iso) return '';
-    const [y, m, d] = iso.split('-').map(Number);
-    return `${d} ${MESES[m - 1]} ${y}`;
+    const d = aFecha(iso);
+    return `${d.getDate()} ${MESES[d.getMonth()]}${conAnio ? ` ${d.getFullYear()}` : ''}`;
   }
-  function hora(h) { return h ? h.slice(0, 5) : ''; }
+  const hora = (h) => (h ? h.slice(0, 5) : '');
   function cuando(fecha, h) {
     if (!fecha) return '';
     const t = new Date(`${fecha}T${h || '00:00:00'}`);
     const min = Math.round((Date.now() - t) / 60000);
     if (h && min >= 0 && min < 60) return `Hace ${Math.max(min, 1)} min`;
     if (h && min >= 60 && min < 24 * 60) return `Hace ${Math.round(min / 60)} h`;
-    return h ? `${fechaCorta(fecha)} · ${hora(h)}` : fechaCorta(fecha);
+    return fechaCorta(fecha);
   }
-  function hace(iso) {
-    const min = Math.round((Date.now() - new Date(iso)) / 60000);
+  function hace(ts) {
+    const min = Math.round((Date.now() - ts) / 60000);
     if (min < 1) return 'hace un momento';
     if (min < 60) return `hace ${min} min`;
     if (min < 24 * 60) return `hace ${Math.round(min / 60)} h`;
-    const d = new Date(iso);
+    const d = new Date(ts);
     return `el ${d.getDate()} ${MESES[d.getMonth()]} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
   }
-  function isoLocal(d) {
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  }
+  const normalizar = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9ñ]+/g, ' ').trim();
 
+  /* ---------------- periodo ---------------- */
   const PERIODOS = [
     { id: '30d', txt: '30 días' },
     { id: 'mes', txt: 'Este mes' },
     { id: 'anio', txt: 'Este año' },
     { id: 'todo', txt: 'Todo' },
   ];
-  function fechaInicio(periodo) {
+  function rango() {
     const hoy = new Date();
-    if (periodo === '30d') { const d = new Date(hoy); d.setDate(d.getDate() - 30); return isoLocal(d); }
-    if (periodo === 'mes') return isoLocal(new Date(hoy.getFullYear(), hoy.getMonth(), 1));
-    if (periodo === 'anio') return `${hoy.getFullYear()}-01-01`;
-    return '';
+    const fin = isoLocal(hoy);
+    if (estado.periodo === '30d') { const d = new Date(hoy); d.setDate(d.getDate() - 29); return { inicio: isoLocal(d), fin }; }
+    if (estado.periodo === 'mes') return { inicio: isoLocal(new Date(hoy.getFullYear(), hoy.getMonth(), 1)), fin };
+    if (estado.periodo === 'anio') return { inicio: `${hoy.getFullYear()}-01-01`, fin };
+    if (estado.periodo === 'rango' && estado.desde) return { inicio: estado.desde, fin: estado.hasta || fin };
+    return { inicio: null, fin: null };
   }
+  function rangoAnterior({ inicio, fin }) {
+    if (!inicio) return null;
+    const a = aFecha(inicio), b = aFecha(fin);
+    const dias = Math.round((b - a) / 86400000) + 1;
+    const af = new Date(a); af.setDate(af.getDate() - 1);
+    const ai = new Date(af); ai.setDate(ai.getDate() - (dias - 1));
+    return { inicio: isoLocal(ai), fin: isoLocal(af) };
+  }
+
+  /* ---------------- búsqueda tolerante ----------------
+   * Acepta palabras sin acentos, incompletas o con un error de dedo:
+   * "arbol caido", "arbl", "caida", "convulcion".
+   */
+  function distancia(a, b) {
+    if (Math.abs(a.length - b.length) > 2) return 9;
+    const v = Array.from({ length: b.length + 1 }, (_, i) => i);
+    for (let i = 1; i <= a.length; i++) {
+      let prev = v[0]; v[0] = i;
+      for (let j = 1; j <= b.length; j++) {
+        const tmp = v[j];
+        v[j] = Math.min(v[j] + 1, v[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+        prev = tmp;
+      }
+    }
+    return v[b.length];
+  }
+  function puntaje(q, nombre, ruta) {
+    if (!q) return 0;
+    if (nombre === q) return 1000;
+    if (nombre.startsWith(q)) return 900;
+    const pos = nombre.indexOf(q);
+    if (pos >= 0) return 800 - pos;
+    const palabrasN = nombre.split(' ');
+    const palabrasR = ruta.split(' ');
+    let suma = 0, enNombre = true;
+    for (const t of q.split(' ')) {
+      const buscar = (palabras) => {
+        let mejor = 0;
+        for (const w of palabras) {
+          if (!w) continue;
+          if (w.startsWith(t)) mejor = Math.max(mejor, 1);
+          else if (t.length >= 4) {
+            const d = distancia(t, w.slice(0, t.length + 1));
+            const tol = t.length >= 7 ? 2 : 1;
+            if (d <= tol) mejor = Math.max(mejor, 1 - d * 0.2);
+          }
+        }
+        return mejor;
+      };
+      let s = buscar(palabrasN);
+      if (!s) { s = buscar(palabrasR) * 0.6; enNombre = false; }
+      if (!s) return 0;
+      suma += s;
+    }
+    return Math.round(300 * (suma / q.split(' ').length)) + (enNombre ? 100 : 0);
+  }
+  const PRIORIDAD = { subcategoria: 3, incidente: 3, detalle: 2, causa: 2, categoria: 1, tabla: 1 };
+  function buscarEn(lista, texto, max = 12) {
+    const q = normalizar(texto);
+    if (!q) return [];
+    return lista
+      .map((it) => ({ it, s: puntaje(q, it._n || (it._n = normalizar(it.n)), it._r || (it._r = normalizar(it.r))) }))
+      .filter((x) => x.s > 0)
+      .sort((a, b) => b.s - a.s || (PRIORIDAD[b.it.nv] || 0) - (PRIORIDAD[a.it.nv] || 0) || a.it.n.localeCompare(b.it.n))
+      .slice(0, max)
+      .map((x) => x.it);
+  }
+  function resaltar(nombre, texto) {
+    const q = normalizar(texto);
+    const n = normalizar(nombre);
+    const i = q ? n.indexOf(q) : -1;
+    if (i < 0) return esc(nombre);
+    return `${esc(nombre.slice(0, i))}<mark>${esc(nombre.slice(i, i + q.length))}</mark>${esc(nombre.slice(i + q.length))}`;
+  }
+  const NIVELES = { categoria: 'Categoría', subcategoria: 'Subcategoría', detalle: 'Detalle', tabla: 'Tabla', incidente: 'Incidente', causa: 'Causa' };
 
   /* ---------------- red ---------------- */
   async function pedir(ruta, params = {}) {
@@ -110,11 +194,15 @@
   }
 
   function paramsModulo(modulo) {
+    const { inicio, fin } = rango();
+    const tipo = estado.tipo[modulo];
     return {
       modulo,
-      fecha_inicio: fechaInicio(estado.periodo),
+      fecha_inicio: inicio,
+      fecha_fin: fin,
       colonia: estado.colonia,
-      tipo: estado.tipo[modulo],
+      nivel: tipo ? tipo.nv : '',
+      id: tipo ? String(tipo.id) : '',
     };
   }
   const claveCache = (p) => 'pc.datos.' + JSON.stringify(p);
@@ -131,11 +219,16 @@
     const p = paramsModulo(modulo);
     const clave = claveCache(p);
     const guardado = leer(clave);
-    if (guardado) pintarModulo(modulo, guardado.data);
-    else $vista.innerHTML = filtrosHTML(modulo) + '<div class="esqueleto"></div><div class="esqueleto"></div>';
-    enlazarFiltros(modulo);
-    if (guardado) mostrarEstado(guardado.ts, !navigator.onLine);
+    const $datos = document.getElementById('datos');
+    if (!$datos) return;
+    actualizarFiltrosUI(modulo);
 
+    if (guardado) {
+      pintarDatos(modulo, guardado.data);
+      mostrarEstado(guardado.ts, !navigator.onLine);
+    } else if (!$datos.children.length) {
+      $datos.innerHTML = '<div class="esqueleto"></div><div class="esqueleto"></div>';
+    }
     if (!forzar && guardado && Date.now() - guardado.ts < 60 * 1000) return;
 
     ocupado(true);
@@ -143,19 +236,17 @@
       const data = await pedir('resumen', p);
       guardar(clave, { ts: Date.now(), data });
       if (estado.tab === modulo && claveCache(paramsModulo(modulo)) === clave) {
-        pintarModulo(modulo, data);
+        pintarDatos(modulo, data);
         mostrarEstado(Date.now(), false);
       }
     } catch (e) {
-      if (estado.tab !== modulo) return;
+      if (estado.tab !== modulo || claveCache(paramsModulo(modulo)) !== clave) return;
       if (guardado) {
         mostrarEstado(guardado.ts, true, e.message);
       } else {
-        $vista.innerHTML = filtrosHTML(modulo) + errorHTML(e.message);
-        enlazarFiltros(modulo);
-        $vista.querySelector('[data-reintentar]').addEventListener('click', () => cargarModulo(modulo, { forzar: true }));
-        $estado.textContent = 'Sin datos';
-        $estado.className = 'topbar__estado is-error';
+        $datos.innerHTML = errorHTML(e.message);
+        $datos.querySelector('[data-reintentar]').addEventListener('click', () => cargarModulo(modulo, { forzar: true }));
+        mostrarError('Sin datos');
       }
     } finally {
       ocupado(false);
@@ -165,246 +256,479 @@
   function ocupado(si) {
     estado.cargando = si;
     $btnActualizar.classList.toggle('is-loading', si);
-    if (si && !$estado.textContent.startsWith('Actualizado')) $estado.textContent = 'Actualizando…';
+    $vista.classList.toggle('is-refreshing', si);
   }
 
+  function $estadoLinea() { return document.getElementById('estado'); }
   function mostrarEstado(ts, sinRed, msg) {
-    if (sinRed) {
-      $estado.textContent = `${msg || 'Sin conexión'} · datos de ${hace(ts)}`;
-      $estado.className = 'topbar__estado is-offline';
-    } else {
-      $estado.textContent = `Actualizado ${hace(ts)}`;
-      $estado.className = 'topbar__estado';
+    const $e = $estadoLinea();
+    if (!$e) return;
+    $e.className = `estado${sinRed ? ' is-offline' : ''}`;
+    $e.innerHTML = sinRed
+      ? `<span class="estado__punto"></span><span><b>${esc(msg || 'Sin conexión')}</b> · datos de ${esc(hace(ts))}</span>`
+      : `<span class="estado__punto"></span><span>En línea · actualizado ${esc(hace(ts))}</span>`;
+  }
+  function mostrarError(msg) {
+    const $e = $estadoLinea();
+    if (!$e) return;
+    $e.className = 'estado is-error';
+    $e.innerHTML = `<span class="estado__punto"></span><span><b>${esc(msg)}</b></span>`;
+  }
+
+  /* ---------------- íconos ---------------- */
+  const svg = (d) => `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${d}"/></svg>`;
+  const ICON = {
+    alerta: svg('M12 2 1 21h22L12 2zm1 16h-2v-2h2v2zm0-4h-2v-4h2v4z'),
+    botiquin: svg('M20 6h-4V4c0-1.1-.9-2-2-2h-4c-1.1 0-2 .9-2 2v2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zM10 4h4v2h-4V4zm6 11h-3v3h-2v-3H8v-2h3v-3h2v3h3v2z'),
+    colonia: svg('M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5a2.5 2.5 0 1 1 0-5 2.5 2.5 0 0 1 0 5z'),
+    chart: svg('M4 9h4v11H4V9zm6-5h4v16h-4V4zm6 8h4v8h-4v-8z'),
+    unidad: svg('M20 8h-3V4H3c-1.1 0-2 .9-2 2v11h2a3 3 0 0 0 6 0h6a3 3 0 0 0 6 0h2v-5l-3-4zM6 18.5a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zM19.5 9.5l1.96 2.5H17V9.5h2.5zM18 18.5a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3z'),
+    reloj: svg('M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z'),
+    calor: svg('M3 3h4v4H3V3zm6 0h4v4H9V3zm6 0h4v4h-4V3zM3 9h4v4H3V9zm6 0h4v4H9V9zm6 0h4v4h-4V9zM3 15h4v4H3v-4zm6 0h4v4H9v-4zm6 0h4v4h-4v-4z'),
+    tendencia: svg('M16 6l2.29 2.29-4.88 4.88-4-4L2 16.59 3.41 18l6-6 4 4 6.3-6.29L22 12V6h-6z'),
+    personas: svg('M16 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zm-8 0a3 3 0 1 0 0-6 3 3 0 0 0 0 6zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5C15 14.17 10.33 13 8 13zm8 0c-.29 0-.62.02-.97.05A4.2 4.2 0 0 1 17 16.5V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z'),
+    hospital: svg('M19 3H5c-1.1 0-1.99.9-1.99 2L3 19c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-1 11h-4v4h-4v-4H6v-4h4V6h4v4h4v4z'),
+    historial: svg('M13 3a9 9 0 0 0-9 9H1l3.89 3.89.07.14L9 12H6a7 7 0 1 1 7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42A8.95 8.95 0 0 0 13 21a9 9 0 0 0 0-18zm-1 5v5l4.25 2.52.77-1.28-3.52-2.09V8H12z'),
+    documento: svg('M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z'),
+    lupa: svg('M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z'),
+    calendario: svg('M19 4h-1V2h-2v2H8V2H6v2H5c-1.11 0-2 .9-2 2v14a2 2 0 0 0 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 16H5V9h14v11zM7 11h5v5H7z'),
+    lluvia: svg('M19.35 8.04A7.49 7.49 0 0 0 12 2C9.11 2 6.6 3.64 5.35 6.04A5.99 5.99 0 0 0 6 18h13a5 5 0 0 0 .35-9.96zM8 20l-1 2h2l1-2H8zm4 0-1 2h2l1-2h-2zm4 0-1 2h2l1-2h-2z'),
+    arriba: svg('M7 14l5-5 5 5z'),
+    abajo: svg('M7 10l5 5 5-5z'),
+    pin: svg('M14 4v5c0 1.12.37 2.16 1 3H9c.65-.86 1-1.9 1-3V4h4m3-2H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3V4h1c.55 0 1-.45 1-1s-.45-1-1-1z'),
+  };
+  const titulo = (txt, icono, naranja = false, extra = '') =>
+    `<div class="card__head"><h2 class="card__title"><i class="${naranja ? 'naranja' : ''}">${icono}</i>${esc(txt)}</h2>${extra}</div>`;
+
+  /* ---------------- filtros ---------------- */
+  function filtrosHTML(modulo) {
+    const tipoTxt = modulo === 'operativo' ? 'Tipo de incidente' : 'Tipo de emergencia';
+    const ejemplo = modulo === 'operativo' ? 'Ej. árbol caído, fuga de gas…' : 'Ej. caída, convulsión, choque…';
+    return `
+      <div class="estado" id="estado"><span class="estado__punto"></span><span>Cargando…</span></div>
+      <section class="card filtros" aria-label="Filtros">
+        <div class="chips" role="group" aria-label="Periodo">
+          ${PERIODOS.map((p) => `<button type="button" class="chip" data-periodo="${p.id}">${p.txt}</button>`).join('')}
+          <button type="button" class="chip" data-periodo="rango">${ICON.calendario}Fechas</button>
+        </div>
+        <div class="rango" id="rango" hidden>
+          <label class="campo"><span>Desde</span><input class="entrada" type="date" id="f-desde"></label>
+          <label class="campo"><span>Hasta</span><input class="entrada" type="date" id="f-hasta"></label>
+        </div>
+        <div class="filtros__fila">
+          <label class="campo buscador"><span>${tipoTxt}</span>
+            <input class="entrada" id="b-tipo" type="search" autocomplete="off" placeholder="${ejemplo}" role="combobox" aria-expanded="false" aria-controls="s-tipo">
+            ${ICON.lupa}
+            <ul class="sugerencias" id="s-tipo" role="listbox" hidden></ul>
+          </label>
+          <label class="campo buscador"><span>Colonia</span>
+            <input class="entrada" id="b-colonia" type="search" autocomplete="off" placeholder="Buscar colonia…" role="combobox" aria-expanded="false" aria-controls="s-colonia">
+            ${ICON.lupa}
+            <ul class="sugerencias" id="s-colonia" role="listbox" hidden></ul>
+          </label>
+        </div>
+        <div class="activos" id="activos"></div>
+        <div class="periodo-texto" id="periodo-texto"></div>
+      </section>
+      <div class="datos-vista" id="datos"></div>`;
+  }
+
+  function actualizarFiltrosUI(modulo) {
+    document.querySelectorAll('[data-periodo]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.periodo === estado.periodo)));
+    const $rango = document.getElementById('rango');
+    if ($rango) {
+      $rango.hidden = estado.periodo !== 'rango';
+      document.getElementById('f-desde').value = estado.desde;
+      document.getElementById('f-hasta').value = estado.hasta;
+      document.getElementById('f-hasta').max = isoLocal(new Date());
+    }
+    const tipo = estado.tipo[modulo];
+    const pills = [];
+    if (tipo) pills.push(`<span class="pill-filtro"><span>${esc(tipo.n)} <small>· ${esc(NIVELES[tipo.nv] || '')}</small></span><button type="button" data-quitar="tipo" aria-label="Quitar filtro ${esc(tipo.n)}">×</button></span>`);
+    if (estado.colonia) pills.push(`<span class="pill-filtro"><span>${ICON.pin.replace('<svg', '<svg width="12" height="12" style="fill:currentColor;vertical-align:-1px"')} ${esc(estado.colonia)}</span><button type="button" data-quitar="colonia" aria-label="Quitar colonia">×</button></span>`);
+    const $act = document.getElementById('activos');
+    if ($act) {
+      $act.innerHTML = pills.join('');
+      $act.querySelectorAll('[data-quitar]').forEach((b) => b.addEventListener('click', () => {
+        if (b.dataset.quitar === 'tipo') { estado.tipo[modulo] = null; guardar(`pc.tipo.${modulo}`, null); }
+        else { estado.colonia = ''; guardar('pc.colonia', null); }
+        cargarModulo(modulo);
+      }));
+    }
+    const $pt = document.getElementById('periodo-texto');
+    if ($pt) {
+      const r = rango();
+      const ant = rangoAnterior(r);
+      $pt.innerHTML = r.inicio
+        ? `<b>${fechaCorta(r.inicio)} – ${fechaCorta(r.fin)}</b>${ant ? ` · comparado con ${fechaCorta(ant.inicio)} – ${fechaCorta(ant.fin)}` : ''}`
+        : '<b>Todo el historial</b>';
     }
   }
 
-  /* ---------------- piezas de interfaz ---------------- */
-  const ICON = {
-    colonia: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 11V5l-3-3-3 3v2H3v14h18V11h-6zm-8 8H5v-2h2v2zm0-4H5v-2h2v2zm0-4H5V9h2v2zm6 8h-2v-2h2v2zm0-4h-2v-2h2v2zm0-4h-2V9h2v2zm0-4h-2V5h2v2zm6 12h-2v-2h2v2zm0-4h-2v-2h2v2z"/></svg>',
-    chart: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4v11H4V9zm6-5h4v16h-4V4zm6 8h4v8h-4v-8z"/></svg>',
-    unidad: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 8h-3V4H3c-1.1 0-2 .9-2 2v11h2a3 3 0 0 0 6 0h6a3 3 0 0 0 6 0h2v-5l-3-4zM6 18.5a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zM19.5 9.5l1.96 2.5H17V9.5h2.5zM18 18.5a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3z"/></svg>',
-    reloj: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3a9 9 0 0 0-9 9H1l3.89 3.89.07.14L9 12H6a7 7 0 1 1 2.05 4.95l-1.42 1.42A9 9 0 1 0 13 3zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/></svg>',
-    personas: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zm-8 0a3 3 0 1 0 0-6 3 3 0 0 0 0 6zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5C15 14.17 10.33 13 8 13zm8 0c-.29 0-.62.02-.97.05A4.2 4.2 0 0 1 17 16.5V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>',
-    hospital: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 3H5c-1.1 0-1.99.9-1.99 2L3 19c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-1 11h-4v4h-4v-4H6v-4h4V6h4v4h4v4z"/></svg>',
-    botiquin: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6h-4V4c0-1.1-.9-2-2-2h-4c-1.1 0-2 .9-2 2v2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zM10 4h4v2h-4V4zm6 11h-3v3h-2v-3H8v-2h3v-3h2v3h3v2z"/></svg>',
-    ambulancia: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 10h-1V7h-3V4H3c-1.1 0-2 .9-2 2v11h2a3 3 0 0 0 6 0h6a3 3 0 0 0 6 0h2v-4l-5-3zM6 18.5a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zM10 11H8v2H6v-2H4V9h2V7h2v2h2v2zm8 7.5a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zM17 12V9.5l3.5 2.5H17z"/></svg>',
-    alerta: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 1 21h22L12 2zm1 16h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>',
-    lluvia: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.35 8.04A7.49 7.49 0 0 0 12 2C9.11 2 6.6 3.64 5.35 6.04A5.99 5.99 0 0 0 6 18h13a5 5 0 0 0 .35-9.96zM8 20l-1 2h2l1-2H8zm4 0-1 2h2l1-2h-2zm4 0-1 2h2l1-2h-2z"/></svg>',
-    historial: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3a9 9 0 0 0-9 9H1l3.89 3.89.07.14L9 12H6a7 7 0 1 1 7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42A8.95 8.95 0 0 0 13 21a9 9 0 0 0 0-18zm-1 5v5l4.25 2.52.77-1.28-3.52-2.09V8H12z"/></svg>',
-    documento: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg>',
-  };
-
-  function filtrosHTML(modulo) {
-    const cat = estado.catalogo || {};
-    const tipos = modulo === 'operativo' ? cat.categorias_operativo || [] : cat.tablas_medico || [];
-    const opt = (v, sel) => `<option value="${esc(v)}"${v === sel ? ' selected' : ''}>${esc(v)}</option>`;
-    return `
-      <section class="card filtros" aria-label="Filtros">
-        <div class="chips" role="group" aria-label="Periodo">
-          ${PERIODOS.map((p) => `<button type="button" class="chip" data-periodo="${p.id}" aria-pressed="${p.id === estado.periodo}">${p.txt}</button>`).join('')}
-        </div>
-        <label>Colonia
-          <select data-filtro="colonia">
-            <option value="">Todas las colonias</option>
-            ${(cat.colonias || []).map((c) => opt(c, estado.colonia)).join('')}
-          </select>
-        </label>
-        <label>${modulo === 'operativo' ? 'Categoría de incidente' : 'Tipo de incidente'}
-          <select data-filtro="tipo">
-            <option value="">Todos los incidentes</option>
-            ${tipos.map((t) => opt(t, estado.tipo[modulo])).join('')}
-          </select>
-        </label>
-      </section>`;
-  }
-
   function enlazarFiltros(modulo) {
-    $vista.querySelectorAll('[data-periodo]').forEach((b) =>
+    document.querySelectorAll('[data-periodo]').forEach((b) =>
       b.addEventListener('click', () => {
         estado.periodo = b.dataset.periodo;
+        if (estado.periodo === 'rango' && !estado.desde) {
+          const d = new Date(); d.setDate(d.getDate() - 6);
+          estado.desde = isoLocal(d);
+          estado.hasta = isoLocal(new Date());
+        }
         guardar('pc.periodo', estado.periodo);
+        guardar('pc.desde', estado.desde || null);
+        guardar('pc.hasta', estado.hasta || null);
         cargarModulo(modulo);
       })
     );
-    $vista.querySelector('[data-filtro="colonia"]').addEventListener('change', (e) => {
-      estado.colonia = e.target.value;
-      guardar('pc.colonia', estado.colonia);
-      cargarModulo(modulo);
+    const alCambiarFecha = () => {
+      let d = document.getElementById('f-desde').value;
+      let h = document.getElementById('f-hasta').value;
+      if (d && h && d > h) [d, h] = [h, d];
+      estado.desde = d;
+      estado.hasta = h;
+      guardar('pc.desde', d || null);
+      guardar('pc.hasta', h || null);
+      if (d) cargarModulo(modulo);
+    };
+    document.getElementById('f-desde').addEventListener('change', alCambiarFecha);
+    document.getElementById('f-hasta').addEventListener('change', alCambiarFecha);
+
+    const fuenteTipo = () => (estado.catalogo || {})[modulo === 'operativo' ? 'buscar_operativo' : 'buscar_medico'] || [];
+    combobox('b-tipo', 's-tipo',
+      (texto) => buscarEn(fuenteTipo(), texto).map((it) => ({
+        valor: it,
+        html: `<span class="s-nombre">${resaltar(it.n, texto)}</span><span class="s-ruta"><span class="s-nivel">${esc(NIVELES[it.nv] || '')}</span>${esc(it.r)}</span>`,
+      })),
+      (it) => {
+        estado.tipo[modulo] = { id: it.id, nv: it.nv, n: it.n, r: it.r };
+        guardar(`pc.tipo.${modulo}`, estado.tipo[modulo]);
+        cargarModulo(modulo);
+      },
+      () => (fuenteTipo().length ? 'Sin coincidencias. Prueba con otra palabra.' : 'El catálogo aún no se descarga; revisa tu conexión.'));
+
+    const fuenteColonias = () => ((estado.catalogo || {}).colonias || []).map((c) => ({ n: c, r: '', nv: 'colonia' }));
+    combobox('b-colonia', 's-colonia',
+      (texto) => buscarEn(fuenteColonias(), texto, 10).map((it) => ({ valor: it, html: `<span class="s-nombre">${resaltar(it.n, texto)}</span>` })),
+      (it) => {
+        estado.colonia = it.n;
+        guardar('pc.colonia', it.n);
+        cargarModulo(modulo);
+      },
+      () => 'Sin coincidencias.');
+  }
+
+  // Campo de búsqueda con lista de sugerencias (teclado y táctil)
+  function combobox(idInput, idLista, buscar, alElegir, textoVacio) {
+    const $in = document.getElementById(idInput);
+    const $ul = document.getElementById(idLista);
+    let items = [], activo = -1;
+    const cerrar = () => { $ul.hidden = true; $in.setAttribute('aria-expanded', 'false'); activo = -1; };
+    const elegir = (i) => {
+      const it = items[i];
+      if (!it) return;
+      $in.value = '';
+      cerrar();
+      $in.blur();
+      alElegir(it.valor);
+    };
+    const pintar = () => {
+      const texto = $in.value;
+      if (!normalizar(texto)) { cerrar(); return; }
+      items = buscar(texto);
+      $ul.innerHTML = items.length
+        ? items.map((it, i) => `<li role="option" data-i="${i}" aria-selected="${i === activo}">${it.html}</li>`).join('')
+        : `<li class="s-vacio">${esc(textoVacio())}</li>`;
+      $ul.hidden = false;
+      $in.setAttribute('aria-expanded', 'true');
+    };
+    $in.addEventListener('input', () => { activo = -1; pintar(); });
+    $in.addEventListener('focus', () => { if ($in.value) pintar(); });
+    $in.addEventListener('keydown', (e) => {
+      if ($ul.hidden) return;
+      if (e.key === 'ArrowDown') { activo = Math.min(items.length - 1, activo + 1); pintar(); e.preventDefault(); }
+      else if (e.key === 'ArrowUp') { activo = Math.max(0, activo - 1); pintar(); e.preventDefault(); }
+      else if (e.key === 'Enter') { elegir(activo >= 0 ? activo : 0); e.preventDefault(); }
+      else if (e.key === 'Escape') cerrar();
     });
-    $vista.querySelector('[data-filtro="tipo"]').addEventListener('change', (e) => {
-      estado.tipo[modulo] = e.target.value;
-      cargarModulo(modulo);
+    $in.addEventListener('blur', () => setTimeout(cerrar, 150));
+    $ul.addEventListener('pointerdown', (e) => e.preventDefault());
+    $ul.addEventListener('click', (e) => {
+      const li = e.target.closest('li[data-i]');
+      if (li) elegir(+li.dataset.i);
     });
   }
 
   function errorHTML(msg) {
     return `
       <section class="card error-card" role="alert">
-        <h2>${ICON.alerta} No se pudieron cargar los datos</h2>
+        ${titulo('No se pudieron cargar los datos', ICON.alerta, true)}
         <p>${esc(msg)}. Revisa tu conexión e inténtalo de nuevo.</p>
         <button type="button" class="btn" data-reintentar>Reintentar</button>
       </section>`;
   }
 
-  function card(titulo, icono, cuerpo, nota) {
-    return `<section class="card"><h2>${icono}${esc(titulo)}</h2>${nota ? `<p class="card__nota">${esc(nota)}</p>` : ''}${cuerpo}</section>`;
+  /* ---------------- piezas de datos ---------------- */
+  function delta(total, anterior) {
+    if (anterior == null) return '';
+    if (!anterior) return total ? '<span class="delta">Nuevo vs periodo anterior</span>' : '';
+    const pct = ((total - anterior) / anterior) * 100;
+    const r = Math.round(pct * 10) / 10;
+    const flecha = r > 0 ? ICON.arriba : r < 0 ? ICON.abajo : '';
+    return `<span class="delta" title="Periodo anterior: ${num(anterior)}">${flecha}${r > 0 ? '+' : ''}${r.toFixed(1)}% <span style="color:var(--text-3);font-weight:500">vs ${num(anterior)}</span></span>`;
   }
 
-  function ranking(items, campo, { rojoTop = 0, vacio = 'Sin registros en este periodo' } = {}) {
+  // Completa la serie con ceros para que la tendencia no salte periodos vacíos
+  function puntosSerie(d) {
+    const mapa = new Map((d.serie || []).map((s) => [s.p, s.t]));
+    const out = [];
+    const r = rango();
+    if (d.granularidad === 'dia' && r.inicio) {
+      for (let f = aFecha(r.inicio), fin = aFecha(r.fin); f <= fin; f.setDate(f.getDate() + 1)) {
+        const iso = isoLocal(f);
+        out.push({ t: mapa.get(iso) || 0, corta: `${f.getDate()} ${MESES[f.getMonth()]}`, etiqueta: `${DIAS_CORTOS[f.getDay()]} ${f.getDate()} ${MESES[f.getMonth()]} ${f.getFullYear()}` });
+      }
+      return out;
+    }
+    const claves = [...mapa.keys()].sort();
+    if (!claves.length) return out;
+    const desde = r.inicio ? aFecha(r.inicio) : aFecha(claves[0]);
+    const hasta = r.fin ? aFecha(r.fin) : aFecha(claves[claves.length - 1]);
+    for (let f = new Date(desde.getFullYear(), desde.getMonth(), 1); f <= hasta; f.setMonth(f.getMonth() + 1)) {
+      const iso = isoLocal(f);
+      out.push({ t: mapa.get(iso) || 0, corta: `${MESES[f.getMonth()]} ${String(f.getFullYear()).slice(2)}`, etiqueta: `${MESES_LARGOS[f.getMonth()]} ${f.getFullYear()}` });
+    }
+    return out;
+  }
+
+  function barras(items, nombre, sub, { max = 8, naranja = false, total = 0, vacio = 'Sin registros en este periodo' } = {}) {
     if (!items || !items.length) return `<p class="vacio">${vacio}</p>`;
-    return `<ul class="ranking">${items
-      .map((it, i) => `<li><span class="ranking__nombre">${esc(vacioSi(it[campo]))}</span><span class="pill${i < rojoTop ? ' pill--rojo' : ''}">${num(it.total)}</span></li>`)
-      .join('')}</ul>`;
-  }
-
-  function barras(items, nombre, sub, { max = 8, rojo = false } = {}) {
-    if (!items || !items.length) return '<p class="vacio">Sin registros en este periodo</p>';
     const top = items.slice(0, max);
     const mayor = Math.max(...top.map((i) => i.total), 1);
-    return `<div class="barras${rojo ? ' barras--rojo' : ''}">${top
-      .map((it) => `
-        <div class="barra__fila">
-          <div class="barra__texto">
-            <span class="barra__nombre">${esc(vacioSi(nombre(it)))}${sub && sub(it) ? `<small>${esc(sub(it))}</small>` : ''}</span>
-            <span class="barra__valor">${num(it.total)}</span>
-          </div>
-          <div class="barra__pista"><div class="barra__relleno" style="width:${((it.total / mayor) * 100).toFixed(1)}%"></div></div>
-        </div>`)
-      .join('')}</div>`;
+    return `<div class="barras${naranja ? ' barras--naranja' : ''}">${top.map((it, i) => `
+      <div class="barra${i === 0 ? ' barra--top' : ''}">
+        <div class="barra__texto">
+          <span class="barra__nombre">${esc(vacioSi(nombre(it)))}${sub && sub(it) ? `<small>${esc(sub(it))}</small>` : ''}</span>
+          <span class="barra__valor">${num(it.total)}${total ? `<small>${Math.round((it.total / total) * 100)}%</small>` : ''}</span>
+        </div>
+        <div class="barra__pista"><div class="barra__relleno" style="width:${((it.total / mayor) * 100).toFixed(1)}%"></div></div>
+      </div>`).join('')}</div>`;
   }
 
-  const COLORES = ['#1a237e', '#b6171e', '#4c56af', '#b26a00', '#767683', '#1b6e3c'];
-  function segmentos(items, campo, etiqueta = (v) => v) {
+  const COLORES = ['#3987e5', '#d95926', '#199e70'];
+  function donaHTML(items, campo, etiqueta, centro, sub) {
     if (!items || !items.length) return '<p class="vacio">Sin registros en este periodo</p>';
     const total = items.reduce((s, i) => s + i.total, 0) || 1;
+    // Más de 3 partes se agrupan en "Otros" (máximo 3 colores validados)
+    let lista = items.slice(0, 3);
+    if (items.length > 3) lista = [...items.slice(0, 2), { [campo]: 'Otros', total: items.slice(2).reduce((s, i) => s + i.total, 0) }];
+    const partes = lista.map((it, i) => ({ nombre: etiqueta(vacioSi(it[campo])), t: it.total, color: COLORES[i] }));
+    return `<div class="dona">
+      <div>${G.dona(partes, num(centro), sub)}</div>
+      <ul class="leyenda">${partes.map((p) => `<li><i style="background:${p.color}"></i><span>${esc(p.nombre)}</span><b>${num(p.t)}<small>${Math.round((p.t / total) * 100)}%</small></b></li>`).join('')}</ul>
+    </div>`;
+  }
+
+  function heroHTML(label, d, unidad) {
     return `
-      <div class="segmentos" role="img" aria-label="${esc(items.map((i) => `${etiqueta(i[campo])}: ${i.total}`).join(', '))}">
-        ${items.map((it, i) => `<span style="flex:${it.total};background:${COLORES[i % COLORES.length]}"></span>`).join('')}
-      </div>
-      <ul class="leyenda">
-        ${items
-          .map((it, i) => `<li><i style="background:${COLORES[i % COLORES.length]}"></i>${esc(etiqueta(vacioSi(it[campo])))}<b>${num(it.total)} · ${Math.round((it.total / total) * 100)}%</b></li>`)
-          .join('')}
-      </ul>`;
+      <section class="card hero">
+        <div class="hero__label">${esc(label)}</div>
+        <div class="hero__fila"><span class="hero__valor num">${num(d.total)}</span>${delta(d.total, d.anterior)}</div>
+        <div class="hero__nota">${unidad === 'atenciones' ? 'Atenciones' : 'Servicios'} por ${d.granularidad === 'dia' ? 'día' : 'mes'} · toca la gráfica para ver el detalle</div>
+        <div class="chart" data-chart="area" data-unidad="${unidad}"></div>
+      </section>`;
+  }
+
+  function kpi(label, valor, sub, extra = '', texto = false) {
+    return `<section class="card kpi">
+      <span class="kpi__label">${esc(label)}</span>
+      <div class="kpi__fila"><span class="kpi__valor${texto ? ' kpi__valor--texto' : ''} num">${valor}</span>${extra}</div>
+      ${sub ? `<span class="kpi__sub">${sub}</span>` : ''}
+    </section>`;
+  }
+
+  function horaPicoKPI(d) {
+    const ph = d.por_hora || [];
+    const max = ph.length ? Math.max(...ph) : 0;
+    const pico = d.hora_pico && d.hora_pico !== 'No disponible' ? d.hora_pico.replace(' hrs', '') : '—';
+    return `<section class="card kpi">
+      <span class="kpi__label">Hora pico</span>
+      <span class="kpi__valor num">${esc(pico)}</span>
+      <span class="kpi__sub">${max ? `${cuenta(max)} en esa hora` : 'Sin datos'}</span>
+      ${ph.length ? G.miniHoras(ph) : ''}
+    </section>`;
+  }
+
+  function diaActivoKPI(d) {
+    const dia = d.dia_mas_activo;
+    return kpi('Día más activo', dia ? esc(fechaCorta(dia.fecha, false)) : '—', dia ? `${esc(String(aFecha(dia.fecha).getFullYear()))} · ${cuenta(dia.total)}` : 'Sin datos');
+  }
+
+  function serviciosHTML(regs, modulo) {
+    if (!regs || !regs.length) return '<p class="vacio">Sin servicios en este periodo</p>';
+    const tarjeta = (r) => modulo === 'operativo' ? `
+      <article class="servicio${r.referente_lluvias === 'SI' ? ' servicio--naranja' : ''}">
+        <div class="servicio__top"><h3>${esc(vacioSi(r.tipo_incidente__subcategoria__nombre, 'Incidente'))}</h3><span class="servicio__hora">${esc(hora(r.hora_salida))}</span></div>
+        <p class="servicio__meta">${esc(cuando(r.fecha_servicio, r.hora_salida))} · ${esc(vacioSi(r.colonia, 'Colonia no especificada'))}</p>
+        ${r.descripcion_incidente ? `<p class="servicio__desc">${esc(r.descripcion_incidente)}</p>` : ''}
+        <div class="etiquetas">
+          ${r.tipo_incidente__subcategoria__categoria__nombre ? `<span class="etiqueta etiqueta--azul">${esc(r.tipo_incidente__subcategoria__categoria__nombre)}</span>` : ''}
+          ${r.tipo_incidente__nombre ? `<span class="etiqueta">${esc(r.tipo_incidente__nombre)}</span>` : ''}
+          ${r.unidad_transporte ? `<span class="etiqueta">Unidad ${esc(r.unidad_transporte)}</span>` : ''}
+          ${r.referente_lluvias === 'SI' ? '<span class="etiqueta etiqueta--naranja">Por lluvia</span>' : ''}
+        </div>
+      </article>` : `
+      <article class="servicio${r.requiere_traslado ? ' servicio--naranja' : ''}">
+        <div class="servicio__top"><h3>${esc(vacioSi(r.incidente_medico__nombre, 'Atención médica'))}</h3><span class="servicio__hora">${esc(hora(r.hora_servicio))}</span></div>
+        <p class="servicio__meta">${esc(cuando(r.fecha_servicio, r.hora_servicio))} · ${esc(vacioSi(r.colonia, 'Colonia no especificada'))}</p>
+        ${r.causa_probable__nombre ? `<p class="servicio__desc">Causa probable: ${esc(r.causa_probable__nombre)}</p>` : ''}
+        <div class="etiquetas">
+          ${r.incidente_medico__tabla__nombre ? `<span class="etiqueta etiqueta--azul">${esc(r.incidente_medico__tabla__nombre)}</span>` : ''}
+          ${r.unidad_atiende ? `<span class="etiqueta">${esc(r.unidad_atiende)}</span>` : ''}
+          ${r.requiere_traslado ? `<span class="etiqueta etiqueta--naranja">Traslado${r.hospital_receptor ? ` · ${esc(r.hospital_receptor)}` : ''}</span>` : '<span class="etiqueta">Atendido en sitio</span>'}
+        </div>
+      </article>`;
+    const primeros = regs.slice(0, 5).map(tarjeta).join('');
+    const resto = regs.slice(5).map(tarjeta).join('');
+    return `<div class="servicios">${primeros}<div class="servicios" data-resto hidden>${resto}</div></div>
+      ${resto ? `<button type="button" class="btn btn--secundario ver-mas" data-ver-mas>Ver los ${regs.length} más recientes</button>` : ''}`;
   }
 
   /* ---------------- pantallas ---------------- */
-  function pintarModulo(modulo, data) {
-    const html = modulo === 'operativo' ? operativoHTML(data.operativos) : medicoHTML(data.medicos);
-    // Conserva el scroll al refrescar en segundo plano
-    const y = window.scrollY;
-    $vista.innerHTML = filtrosHTML(modulo) + html;
-    enlazarFiltros(modulo);
-    window.scrollTo(0, y);
+  function pintarDatos(modulo, data) {
+    const $datos = document.getElementById('datos');
+    if (!$datos) return;
+    estado.datos = data;
+    const d = modulo === 'operativo' ? data.operativos : data.medicos;
+    if (!d) { $datos.innerHTML = errorHTML('Respuesta incompleta del servidor'); return; }
+    $datos.innerHTML = modulo === 'operativo' ? operativoHTML(d) : medicoHTML(d);
+
+    const unidad = modulo === 'operativo' ? 'servicios' : 'atenciones';
+    const $area = $datos.querySelector('[data-chart="area"]');
+    if ($area) G.area($area, puntosSerie(d), { unidad });
+    const $calor = $datos.querySelector('[data-chart="calor"]');
+    if ($calor) G.calor($calor, d.heatmap || [], unidad);
+
+    $datos.querySelector('[data-ver-mas]')?.addEventListener('click', (e) => {
+      $datos.querySelector('[data-resto]').hidden = false;
+      e.currentTarget.remove();
+    });
+    $datos.querySelectorAll('[data-vista-tipos]').forEach((b) => b.addEventListener('click', () => {
+      estado.vistaTipos = b.dataset.vistaTipos;
+      pintarDatos(modulo, estado.datos);
+    }));
   }
 
   function operativoHTML(d) {
-    if (!d) return errorHTML('Respuesta incompleta del servidor');
-    const dia = d.dia_mas_activo;
+    const col = (d.top_colonias || [])[0];
+    const porCategoria = estado.vistaTipos === 'cat' && d.desglose_categoria;
+    const selector = d.desglose_categoria ? `<div class="segmentado" role="group" aria-label="Agrupar por">
+      <button type="button" data-vista-tipos="sub" aria-pressed="${!porCategoria}">Tipo</button>
+      <button type="button" data-vista-tipos="cat" aria-pressed="${!!porCategoria}">Categoría</button></div>` : '';
     return `
-      <div class="kpis">
-        <div class="kpi kpi--grande">
-          <span class="kpi__label">Servicios operativos</span>
-          <span class="kpi__valor">${num(d.total)}</span>
-          <span class="kpi__icono">${ICON.alerta}</span>
-        </div>
-        <div class="kpi">
-          <span class="kpi__label">Por lluvias</span>
-          <span class="kpi__valor">${num(d.por_lluvia)}</span>
-          <span class="kpi__sub">${d.pct_lluvia || 0}% del total</span>
-        </div>
-        <div class="kpi">
-          <span class="kpi__label">Hora pico</span>
-          <span class="kpi__valor">${esc(d.hora_pico === 'No disponible' ? '—' : d.hora_pico.replace(' hrs', ''))}</span>
-          <span class="kpi__sub">${dia ? `Día más activo: ${fechaCorta(dia.fecha)}` : 'Sin datos'}</span>
-        </div>
+      ${heroHTML('Servicios operativos', d, 'servicios')}
+      <div class="grid-kpi">
+        ${kpi('Por lluvias', num(d.por_lluvia), `${d.pct_lluvia || 0}% del total`, G.anillo(d.pct_lluvia || 0, '#d95926', '#4a2617'))}
+        ${horaPicoKPI(d)}
+        ${diaActivoKPI(d)}
+        ${kpi('Colonia con más servicios', col ? esc(vacioSi(col.colonia)) : '—', col ? cuenta(col.total) : 'Sin datos', '', true)}
       </div>
-      ${card('Top colonias', ICON.colonia, ranking(d.top_colonias, 'colonia', { rojoTop: 2 }))}
-      ${card('Tipos de incidente', ICON.chart, barras(d.desglose_tipo, (i) => i.tipo_incidente__subcategoria__nombre, (i) => i.tipo_incidente__subcategoria__categoria__nombre))}
-      <div class="dos-col">
-        ${card('Turnos', ICON.reloj, segmentos(d.distribucion_turnos, 'turno'))}
-        ${card('Unidades más desplegadas', ICON.unidad, ranking(d.unidades_mas_desplegadas, 'unidad_transporte'))}
+      <section class="card">
+        ${titulo('¿Cuándo ocurren?', ICON.calor, false, '<span class="card__meta">Día × hora</span>')}
+        <div class="chart" data-chart="calor"></div>
+      </section>
+      <div class="grid-2">
+        <section class="card">
+          ${titulo('Incidentes más frecuentes', ICON.chart, false, selector)}
+          ${porCategoria
+            ? barras(d.desglose_categoria, (i) => i.tipo_incidente__subcategoria__categoria__nombre, null, { total: d.total })
+            : barras(d.desglose_tipo, (i) => i.tipo_incidente__subcategoria__nombre, (i) => i.tipo_incidente__subcategoria__categoria__nombre, { total: d.total })}
+        </section>
+        <section class="card">
+          ${titulo('Top colonias', ICON.colonia, true)}
+          ${barras(d.top_colonias, (i) => i.colonia, null, { naranja: true, max: 10, total: d.total })}
+        </section>
       </div>
-      ${card('Últimos servicios', ICON.historial, serviciosOperativos(d.registros))}`;
-  }
-
-  function serviciosOperativos(regs) {
-    if (!regs || !regs.length) return '<p class="vacio">Sin servicios en este periodo</p>';
-    return `<div class="servicios">${regs
-      .map((r) => {
-        const lluvia = r.referente_lluvias === 'SI';
-        return `
-          <article class="servicio${lluvia ? ' servicio--ambar' : ''}">
-            <h3>${esc(vacioSi(r.tipo_incidente__subcategoria__nombre, 'Incidente'))}</h3>
-            <p class="servicio__meta">${esc(cuando(r.fecha_servicio, r.hora_salida))} · ${esc(vacioSi(r.colonia, 'Colonia no especificada'))}</p>
-            ${r.descripcion_incidente ? `<p class="servicio__desc">${esc(r.descripcion_incidente)}</p>` : ''}
-            <div class="etiquetas">
-              ${r.tipo_incidente__subcategoria__categoria__nombre ? `<span class="etiqueta etiqueta--azul">${esc(r.tipo_incidente__subcategoria__categoria__nombre)}</span>` : ''}
-              ${r.unidad_transporte ? `<span class="etiqueta">Unidad ${esc(r.unidad_transporte)}</span>` : ''}
-              ${lluvia ? '<span class="etiqueta">Por lluvia</span>' : ''}
-            </div>
-          </article>`;
-      })
-      .join('')}</div>`;
+      <div class="grid-2">
+        <section class="card">
+          ${titulo('Turnos', ICON.reloj)}
+          ${donaHTML(d.distribucion_turnos, 'turno', (v) => v, d.total, 'servicios')}
+        </section>
+        <section class="card">
+          ${titulo('Unidades más desplegadas', ICON.unidad)}
+          ${barras(d.unidades_mas_desplegadas, (i) => (i.unidad_transporte ? `Unidad ${i.unidad_transporte}` : ''), null, { total: d.total })}
+        </section>
+      </div>
+      <section class="card">
+        ${titulo('Últimos servicios', ICON.historial)}
+        ${serviciosHTML(d.registros, 'operativo')}
+      </section>`;
   }
 
   function medicoHTML(d) {
-    if (!d) return errorHTML('Respuesta incompleta del servidor');
     const sexo = { H: 'Hombre', M: 'Mujer', N: 'No especificado' };
+    const pctSitio = d.total ? Math.round(((d.atendidos_en_sitio || 0) / d.total) * 1000) / 10 : 0;
     return `
-      <div class="kpis">
-        <div class="kpi kpi--grande">
-          <span class="kpi__label">Atenciones totales</span>
-          <span class="kpi__valor">${num(d.total)}</span>
-          <span class="kpi__icono">${ICON.botiquin}</span>
-        </div>
-        <div class="kpi kpi--grande">
-          <span class="kpi__label">Traslados realizados</span>
-          <span class="kpi__valor kpi__valor--rojo">${num(d.traslados)}</span>
-          <span class="kpi__sub">${d.pct_traslado || 0}% · ${num(d.atendidos_en_sitio)} atendidos en sitio</span>
-          <span class="kpi__icono kpi__icono--rojo">${ICON.ambulancia}</span>
-        </div>
-      </div>
-      ${card('Top colonias', ICON.colonia, ranking(d.top_colonias, 'colonia', { rojoTop: 2 }))}
-      ${card('Tipos de emergencia', ICON.chart, barras(d.desglose_tipo, (i) => i.incidente_medico__nombre, (i) => i.incidente_medico__tabla__nombre))}
-      <div class="dos-col">
-        ${card('Grupos de edad', ICON.personas, barras(d.grupos_edad, (i) => i.grupo, null, { rojo: true }))}
-        ${card('Sexo del paciente', ICON.personas, segmentos(d.distribucion_sexo, 'paciente_sexo', (v) => sexo[v] || v))}
-      </div>
-      <div class="dos-col">
-        ${card('Hospitales receptores', ICON.hospital, ranking(d.hospitales_receptores, 'hospital_receptor', { vacio: 'Sin traslados en este periodo' }))}
-        ${card('Unidades que atendieron', ICON.unidad, ranking(d.unidades_que_atendieron, 'unidad_atiende'))}
+      ${heroHTML('Atenciones médicas', d, 'atenciones')}
+      <div class="grid-kpi">
+        ${kpi('Traslados', num(d.traslados), `${d.pct_traslado || 0}% del total`, G.anillo(d.pct_traslado || 0, '#d95926', '#4a2617'))}
+        ${kpi('Atendidos en sitio', num(d.atendidos_en_sitio), `${pctSitio}% del total`, G.anillo(pctSitio, '#3987e5', '#1d3557'))}
+        ${horaPicoKPI(d)}
+        ${diaActivoKPI(d)}
       </div>
       <section class="card">
-        <h2>${ICON.reloj}Datos clave</h2>
-        <dl class="datos">
-          <div><dt>Hora pico</dt><dd>${esc(d.hora_pico === 'No disponible' ? '—' : d.hora_pico)}</dd></div>
-          <div><dt>Día más activo</dt><dd>${d.dia_mas_activo ? `${fechaCorta(d.dia_mas_activo.fecha)} (${num(d.dia_mas_activo.total)})` : '—'}</dd></div>
-        </dl>
+        ${titulo('¿Cuándo ocurren?', ICON.calor, false, '<span class="card__meta">Día × hora</span>')}
+        <div class="chart" data-chart="calor"></div>
       </section>
-      ${card('Últimos servicios', ICON.historial, serviciosMedicos(d.registros))}`;
-  }
-
-  function serviciosMedicos(regs) {
-    if (!regs || !regs.length) return '<p class="vacio">Sin servicios en este periodo</p>';
-    return `<div class="servicios">${regs
-      .map((r) => `
-        <article class="servicio${r.requiere_traslado ? ' servicio--rojo' : ''}">
-          <h3>${esc(vacioSi(r.incidente_medico__nombre, 'Atención médica'))}</h3>
-          <p class="servicio__meta">${esc(cuando(r.fecha_servicio, r.hora_servicio))} · ${esc(vacioSi(r.colonia, 'Colonia no especificada'))}</p>
-          ${r.causa_probable__nombre ? `<p class="servicio__desc">Causa probable: ${esc(r.causa_probable__nombre)}</p>` : ''}
-          <div class="etiquetas">
-            ${r.unidad_atiende ? `<span class="etiqueta">${esc(r.unidad_atiende)}</span>` : ''}
-            ${r.requiere_traslado ? `<span class="etiqueta etiqueta--rojo">Traslado${r.hospital_receptor ? ` · ${esc(r.hospital_receptor)}` : ''}</span>` : '<span class="etiqueta">Atendido en sitio</span>'}
-          </div>
-        </article>`)
-      .join('')}</div>`;
+      <div class="grid-2">
+        <section class="card">
+          ${titulo('Tipos de emergencia', ICON.chart)}
+          ${barras(d.desglose_tipo, (i) => i.incidente_medico__nombre, (i) => i.incidente_medico__tabla__nombre, { total: d.total })}
+        </section>
+        <section class="card">
+          ${titulo('Top colonias', ICON.colonia, true)}
+          ${barras(d.top_colonias, (i) => i.colonia, null, { naranja: true, max: 10, total: d.total })}
+        </section>
+      </div>
+      <div class="grid-2">
+        <section class="card">
+          ${titulo('Causas probables', ICON.botiquin, true)}
+          ${barras(d.causas_probables, (i) => i.causa_probable__nombre, null, { naranja: true, total: d.total })}
+        </section>
+        <section class="card">
+          ${titulo('Turnos', ICON.reloj)}
+          ${donaHTML(d.distribucion_turnos, 'turno', (v) => v, d.total, 'atenciones')}
+        </section>
+      </div>
+      <div class="grid-2">
+        <section class="card">
+          ${titulo('Sexo del paciente', ICON.personas)}
+          ${donaHTML(d.distribucion_sexo, 'paciente_sexo', (v) => sexo[v] || v, d.total, 'pacientes')}
+        </section>
+        <section class="card">
+          ${titulo('Grupos de edad', ICON.personas)}
+          ${barras(d.grupos_edad, (i) => i.grupo, null, { total: d.total })}
+        </section>
+      </div>
+      <div class="grid-2">
+        <section class="card">
+          ${titulo('Hospitales receptores', ICON.hospital, true)}
+          ${barras(d.hospitales_receptores, (i) => i.hospital_receptor, null, { naranja: true, total: d.traslados, vacio: 'Sin traslados en este periodo' })}
+        </section>
+        <section class="card">
+          ${titulo('Unidades que atendieron', ICON.unidad)}
+          ${barras(d.unidades_que_atendieron, (i) => i.unidad_atiende, null, { total: d.total })}
+        </section>
+      </div>
+      <section class="card">
+        ${titulo('Últimos servicios', ICON.historial)}
+        ${serviciosHTML(d.registros, 'medico')}
+      </section>`;
   }
 
   function opinionesHTML() {
     return `
       <section class="card aviso">
-        ${ICON.documento}
+        <div class="aviso__icono">${ICON.documento}</div>
         <h2>Opiniones Técnicas de Riesgo</h2>
         <p>Aquí podrás consultar los dictámenes de riesgo, su nivel y el documento de cada uno.</p>
         <span class="badge">Próximamente</span>
@@ -416,27 +740,28 @@
     const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
     return `
       <section class="card">
-        <h2>${ICON.documento}Acerca de este tablero</h2>
+        ${titulo('Acerca de este tablero', ICON.documento)}
         <ul class="info-lista">
           <li>Es de <b>solo lectura</b>: muestra los reportes operativos y médicos registrados en el sistema de Protección Civil Magdalena Contreras.</li>
+          <li>Usa los filtros para elegir el periodo (o fechas exactas con <b>Fechas</b>), buscar un tipo de incidente escribiendo cualquier palabra, o una colonia.</li>
           <li>Los datos se guardan en el celular: si no hay señal, verás la última información descargada.</li>
           <li>Toca <b>↻</b> arriba a la derecha para traer lo más reciente.</li>
         </ul>
       </section>
       <section class="card">
-        <h2>${ICON.botiquin}Instalar en el celular</h2>
+        ${titulo('Instalar en el celular', ICON.botiquin)}
         ${standalone
           ? '<p class="vacio">Ya estás usando la app instalada.</p>'
           : `${promptInstalar ? '<p><button type="button" class="btn" data-instalar>Instalar app</button></p>' : ''}
              <ul class="info-lista">
-               <li><b>Android (Chrome):</b> menú ⋮ → <b>Agregar a la pantalla principal</b> o <b>Instalar app</b>.</li>
+               <li><b>Android (Chrome):</b> menú ⋮ → <b>Instalar app</b> o <b>Agregar a la pantalla principal</b>.</li>
                <li><b>iPhone (Safari):</b> botón Compartir → <b>Agregar a inicio</b>.</li>
              </ul>`}
       </section>
       <section class="card">
-        <dl class="datos">
+        <dl class="datos-lista">
           <div><dt>Versión</dt><dd>${esc(CFG.VERSION)}</dd></div>
-          <div><dt>Servidor</dt><dd style="font-size:14px">${esc(API_BASE.replace(/^https?:\/\//, ''))}</dd></div>
+          <div><dt>Servidor</dt><dd style="font-size:13px">${esc(API_BASE.replace(/^https?:\/\//, ''))}</dd></div>
         </dl>
         <p style="margin:16px 0 0"><button type="button" class="btn btn--secundario" data-borrar>Borrar datos guardados</button></p>
       </section>`;
@@ -449,15 +774,16 @@
    */
   function render(tab) {
     estado.tab = tab;
+    G.ocultarTip();
     $tabs.forEach((b) => (b.dataset.tab === tab ? b.setAttribute('aria-current', 'page') : b.removeAttribute('aria-current')));
     window.scrollTo(0, 0);
     if (tab === 'operativo' || tab === 'medico') {
+      $vista.innerHTML = filtrosHTML(tab);
+      enlazarFiltros(tab);
       cargarModulo(tab);
       return;
     }
     $vista.innerHTML = tab === 'opiniones' ? opinionesHTML() : infoHTML();
-    $estado.textContent = 'Tablero de solo lectura';
-    $estado.className = 'topbar__estado';
     if (tab === 'info') {
       $vista.querySelector('[data-instalar]')?.addEventListener('click', async () => {
         promptInstalar.prompt();
@@ -480,15 +806,20 @@
     render(tab);
   }
 
-  window.addEventListener('popstate', (e) => {
-    const tab = e.state?.tab || tabDelHash() || INICIO;
-    render(tab);
-  });
+  window.addEventListener('popstate', (e) => render(e.state?.tab || tabDelHash() || INICIO));
 
   function tabDelHash() {
     const t = location.hash.slice(1);
     return TABS.includes(t) ? t : null;
   }
+
+  // Redibuja la tendencia al girar el celular o cambiar el tamaño de la ventana
+  let anchoPrevio = window.innerWidth;
+  window.addEventListener('resize', () => {
+    if (Math.abs(window.innerWidth - anchoPrevio) < 40 || !estado.datos) return;
+    anchoPrevio = window.innerWidth;
+    if (estado.tab === 'operativo' || estado.tab === 'medico') pintarDatos(estado.tab, estado.datos);
+  });
 
   $tabs.forEach((b) => b.addEventListener('click', () => ir(b.dataset.tab)));
   $btnActualizar.addEventListener('click', async () => {
@@ -512,8 +843,9 @@
   history.replaceState({ tab: INICIO }, '', '#' + INICIO);
   if (inicial !== INICIO) history.pushState({ tab: inicial }, '', '#' + inicial);
 
+  // El catálogo nuevo trae el buscador; si el guardado es viejo (sin él), se pide de nuevo
   const catalogoListo = cargarCatalogo();
-  if (estado.catalogo) render(inicial);
+  if (estado.catalogo && estado.catalogo.buscar_operativo) render(inicial);
   else catalogoListo.then(() => render(estado.tab === INICIO ? inicial : estado.tab));
 
   if ('serviceWorker' in navigator) {

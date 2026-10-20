@@ -1,13 +1,14 @@
 // Service worker: guarda la "cáscara" de la app para que abra sin internet.
 // Los datos NO pasan por aquí: app.js los guarda en localStorage.
 // Subir CACHE en cada cambio para que los celulares bajen la versión nueva.
-const CACHE = 'pc-tablero-v1';
+const CACHE = 'pc-tablero-v2';
 const SHELL = [
   './',
   'index.html',
-  'styles.css?v=1',
-  'config.js?v=1',
-  'app.js?v=1',
+  'styles.css?v=2',
+  'config.js?v=2',
+  'charts.js?v=2',
+  'app.js?v=2',
   'manifest.webmanifest',
   'icons/logo-96.png',
   'icons/favicon-32.png',
