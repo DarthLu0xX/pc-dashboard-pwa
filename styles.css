@@ -209,6 +209,20 @@ input[type="date"].entrada { color-scheme: dark; }
 .kpi__fila { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .kpi .mini { margin-top: 8px; }
 
+.kpi--accion { width: 100%; text-align: left; font: inherit; color: inherit; cursor: pointer; transition: border-color .15s, background .15s; }
+.kpi--accion:active { transform: scale(.99); }
+.kpi--accion.is-activo { border-color: rgba(217,89,38,.6); background: linear-gradient(180deg, rgba(217,89,38,.16), var(--card)); }
+.kpi__accion { margin-top: 6px; font-size: 12.5px; font-weight: 600; color: #f2a27f; }
+.kpi__nota { margin-top: 6px; font-size: 11px; line-height: 15px; color: var(--text-3); }
+.card__pie { margin: 12px 0 0; font-size: 12px; color: var(--text-3); }
+.hero__en-curso { color: var(--text-2); white-space: nowrap; }
+.pill-filtro--naranja { background: var(--s2-soft); border-color: rgba(217,89,38,.45); }
+.lista-pie { margin-top: 14px; display: grid; gap: 10px; }
+.lista-pie__texto { margin: 0; font-size: 12.5px; color: var(--text-3); text-align: center; }
+.lista-pie__botones { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.lista-pie__botones[hidden] { display: none; }
+.lista-pie__botones .btn:disabled { opacity: .5; cursor: progress; }
+
 /* ---------- Gráficas ---------- */
 .chart { position: relative; width: 100%; }
 .chart svg { display: block; overflow: visible; }

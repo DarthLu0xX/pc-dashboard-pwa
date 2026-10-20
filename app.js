@@ -28,7 +28,9 @@
     hasta: leer('pc.hasta') || '',
     colonia: leer('pc.colonia') || '',
     tipo: { operativo: leer('pc.tipo.operativo'), medico: leer('pc.tipo.medico') },
+    lluvia: leer('pc.lluvia') === true,
     vistaTipos: 'sub',
+    lista: null,
     catalogo: leer('pc.catalogo'),
     datos: null,
     cargando: false,
@@ -49,7 +51,7 @@
   /* ---------------- utilidades ---------------- */
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const num = (n) => fmt.format(n || 0);
-  const cuenta = (n, palabra = 'servicio') => `${num(n)} ${n === 1 ? palabra : `${palabra}s`}`;
+  const cuenta = (n, palabra = 'servicio', plural = `${palabra}s`) => `${num(n)} ${n === 1 ? palabra : plural}`;
   const vacioSi = (v, txt = 'No especificado') => (v == null || String(v).trim() === '' ? txt : v);
 
   const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
@@ -99,6 +101,10 @@
   }
   function rangoAnterior({ inicio, fin }) {
     if (!inicio) return null;
+    if (estado.periodo === 'anio') {
+      const menosUnAnio = (iso) => { const [y, m, d] = iso.split('-'); return `${+y - 1}-${m}-${m === '02' && d === '29' ? '28' : d}`; };
+      return { inicio: menosUnAnio(inicio), fin: menosUnAnio(fin), anual: true };
+    }
     const a = aFecha(inicio), b = aFecha(fin);
     const dias = Math.round((b - a) / 86400000) + 1;
     const af = new Date(a); af.setDate(af.getDate() - 1);
@@ -203,6 +209,8 @@
       colonia: estado.colonia,
       nivel: tipo ? tipo.nv : '',
       id: tipo ? String(tipo.id) : '',
+      comparar: estado.periodo === 'anio' ? 'anio' : '',
+      lluvia: modulo === 'operativo' && estado.lluvia ? '1' : '',
     };
   }
   const claveCache = (p) => 'pc.datos.' + JSON.stringify(p);
@@ -345,12 +353,14 @@
     const tipo = estado.tipo[modulo];
     const pills = [];
     if (tipo) pills.push(`<span class="pill-filtro"><span>${esc(tipo.n)} <small>· ${esc(NIVELES[tipo.nv] || '')}</small></span><button type="button" data-quitar="tipo" aria-label="Quitar filtro ${esc(tipo.n)}">×</button></span>`);
+    if (modulo === 'operativo' && estado.lluvia) pills.push(`<span class="pill-filtro pill-filtro--naranja"><span>${ICON.lluvia.replace('<svg', '<svg width="13" height="13" style="fill:currentColor;vertical-align:-2px"')} Solo por lluvias</span><button type="button" data-quitar="lluvia" aria-label="Quitar filtro de lluvias">×</button></span>`);
     if (estado.colonia) pills.push(`<span class="pill-filtro"><span>${ICON.pin.replace('<svg', '<svg width="12" height="12" style="fill:currentColor;vertical-align:-1px"')} ${esc(estado.colonia)}</span><button type="button" data-quitar="colonia" aria-label="Quitar colonia">×</button></span>`);
     const $act = document.getElementById('activos');
     if ($act) {
       $act.innerHTML = pills.join('');
       $act.querySelectorAll('[data-quitar]').forEach((b) => b.addEventListener('click', () => {
         if (b.dataset.quitar === 'tipo') { estado.tipo[modulo] = null; guardar(`pc.tipo.${modulo}`, null); }
+        else if (b.dataset.quitar === 'lluvia') { estado.lluvia = false; guardar('pc.lluvia', null); }
         else { estado.colonia = ''; guardar('pc.colonia', null); }
         cargarModulo(modulo);
       }));
@@ -360,7 +370,7 @@
       const r = rango();
       const ant = rangoAnterior(r);
       $pt.innerHTML = r.inicio
-        ? `<b>${fechaCorta(r.inicio)} – ${fechaCorta(r.fin)}</b>${ant ? ` · comparado con ${fechaCorta(ant.inicio)} – ${fechaCorta(ant.fin)}` : ''}`
+        ? `<b>${fechaCorta(r.inicio)} – ${fechaCorta(r.fin)}</b>${ant ? ` · comparado con ${fechaCorta(ant.inicio)} – ${fechaCorta(ant.fin)}${ant.anual ? ' (mismo periodo del año pasado)' : ''}` : ''}`
         : '<b>Todo el historial</b>';
     }
   }
@@ -485,7 +495,8 @@
     if (d.granularidad === 'dia' && r.inicio) {
       for (let f = aFecha(r.inicio), fin = aFecha(r.fin); f <= fin; f.setDate(f.getDate() + 1)) {
         const iso = isoLocal(f);
-        out.push({ t: mapa.get(iso) || 0, corta: `${f.getDate()} ${MESES[f.getMonth()]}`, etiqueta: `${DIAS_CORTOS[f.getDay()]} ${f.getDate()} ${MESES[f.getMonth()]} ${f.getFullYear()}` });
+        const hoy = iso === isoLocal(new Date());
+        out.push({ t: mapa.get(iso) || 0, parcial: hoy, corta: `${f.getDate()} ${MESES[f.getMonth()]}`, etiqueta: `${DIAS_CORTOS[f.getDay()]} ${f.getDate()} ${MESES[f.getMonth()]} ${f.getFullYear()}${hoy ? ' (hoy, en curso)' : ''}` });
       }
       return out;
     }
@@ -493,9 +504,11 @@
     if (!claves.length) return out;
     const desde = r.inicio ? aFecha(r.inicio) : aFecha(claves[0]);
     const hasta = r.fin ? aFecha(r.fin) : aFecha(claves[claves.length - 1]);
+    const ahora = new Date();
     for (let f = new Date(desde.getFullYear(), desde.getMonth(), 1); f <= hasta; f.setMonth(f.getMonth() + 1)) {
       const iso = isoLocal(f);
-      out.push({ t: mapa.get(iso) || 0, corta: `${MESES[f.getMonth()]} ${String(f.getFullYear()).slice(2)}`, etiqueta: `${MESES_LARGOS[f.getMonth()]} ${f.getFullYear()}` });
+      const enCurso = f.getFullYear() === ahora.getFullYear() && f.getMonth() === ahora.getMonth();
+      out.push({ t: mapa.get(iso) || 0, parcial: enCurso, corta: `${MESES[f.getMonth()]} ${String(f.getFullYear()).slice(2)}`, etiqueta: `${MESES_LARGOS[f.getMonth()]} ${f.getFullYear()}${enCurso ? ' (en curso)' : ''}` });
     }
     return out;
   }
@@ -523,7 +536,7 @@
     if (items.length > 3) lista = [...items.slice(0, 2), { [campo]: 'Otros', total: items.slice(2).reduce((s, i) => s + i.total, 0) }];
     const partes = lista.map((it, i) => ({ nombre: etiqueta(vacioSi(it[campo])), t: it.total, color: COLORES[i] }));
     return `<div class="dona">
-      <div>${G.dona(partes, num(centro), sub)}</div>
+      <div>${G.dona(partes, num(centro), centro === 1 ? ({ servicios: 'servicio', atenciones: 'atención', pacientes: 'paciente' }[sub] || sub) : sub)}</div>
       <ul class="leyenda">${partes.map((p) => `<li><i style="background:${p.color}"></i><span>${esc(p.nombre)}</span><b>${num(p.t)}<small>${Math.round((p.t / total) * 100)}%</small></b></li>`).join('')}</ul>
     </div>`;
   }
@@ -533,7 +546,7 @@
       <section class="card hero">
         <div class="hero__label">${esc(label)}</div>
         <div class="hero__fila"><span class="hero__valor num">${num(d.total)}</span>${delta(d.total, d.anterior)}</div>
-        <div class="hero__nota">${unidad === 'atenciones' ? 'Atenciones' : 'Servicios'} por ${d.granularidad === 'dia' ? 'día' : 'mes'} · toca la gráfica para ver el detalle</div>
+        <div class="hero__nota">${unidad === 'atenciones' ? 'Atenciones' : 'Servicios'} por ${d.granularidad === 'dia' ? 'día' : 'mes'} · toca la gráfica para ver el detalle${puntosSerie(d).some((p) => p.parcial) ? ` · <span class="hero__en-curso">┄ ${d.granularidad === 'dia' ? 'hoy' : 'el mes actual'} va en curso</span>` : ''}</div>
         <div class="chart" data-chart="area" data-unidad="${unidad}"></div>
       </section>`;
   }
@@ -546,26 +559,27 @@
     </section>`;
   }
 
-  function horaPicoKPI(d) {
+  const notaSinHora = (d) => (d.sin_hora ? `No cuenta ${cuenta(d.sin_hora, 'registro')} de carga masiva sin hora (quedaron a las 12:00)` : '');
+
+  function horaPicoKPI(d, singular = 'servicio', plural = 'servicios') {
     const ph = d.por_hora || [];
     const max = ph.length ? Math.max(...ph) : 0;
     const pico = d.hora_pico && d.hora_pico !== 'No disponible' ? d.hora_pico.replace(' hrs', '') : '—';
     return `<section class="card kpi">
       <span class="kpi__label">Hora pico</span>
       <span class="kpi__valor num">${esc(pico)}</span>
-      <span class="kpi__sub">${max ? `${cuenta(max)} en esa hora` : 'Sin datos'}</span>
+      <span class="kpi__sub">${max ? `${cuenta(max, singular, plural)} en esa hora` : 'Sin datos'}</span>
       ${ph.length ? G.miniHoras(ph) : ''}
+      ${d.sin_hora ? `<span class="kpi__nota">${notaSinHora(d)}</span>` : ''}
     </section>`;
   }
 
-  function diaActivoKPI(d) {
+  function diaActivoKPI(d, singular = 'servicio', plural = 'servicios') {
     const dia = d.dia_mas_activo;
-    return kpi('Día más activo', dia ? esc(fechaCorta(dia.fecha, false)) : '—', dia ? `${esc(String(aFecha(dia.fecha).getFullYear()))} · ${cuenta(dia.total)}` : 'Sin datos');
+    return kpi('Día más activo', dia ? esc(fechaCorta(dia.fecha, false)) : '—', dia ? `${esc(String(aFecha(dia.fecha).getFullYear()))} · ${cuenta(dia.total, singular, plural)}` : 'Sin datos');
   }
 
-  function serviciosHTML(regs, modulo) {
-    if (!regs || !regs.length) return '<p class="vacio">Sin servicios en este periodo</p>';
-    const tarjeta = (r) => modulo === 'operativo' ? `
+  const tarjeta = (r, modulo) => modulo === 'operativo' ? `
       <article class="servicio${r.referente_lluvias === 'SI' ? ' servicio--naranja' : ''}">
         <div class="servicio__top"><h3>${esc(vacioSi(r.tipo_incidente__subcategoria__nombre, 'Incidente'))}</h3><span class="servicio__hora">${esc(hora(r.hora_salida))}</span></div>
         <p class="servicio__meta">${esc(cuando(r.fecha_servicio, r.hora_salida))} · ${esc(vacioSi(r.colonia, 'Colonia no especificada'))}</p>
@@ -587,10 +601,61 @@
           ${r.requiere_traslado ? `<span class="etiqueta etiqueta--naranja">Traslado${r.hospital_receptor ? ` · ${esc(r.hospital_receptor)}` : ''}</span>` : '<span class="etiqueta">Atendido en sitio</span>'}
         </div>
       </article>`;
-    const primeros = regs.slice(0, 5).map(tarjeta).join('');
-    const resto = regs.slice(5).map(tarjeta).join('');
-    return `<div class="servicios">${primeros}<div class="servicios" data-resto hidden>${resto}</div></div>
-      ${resto ? `<button type="button" class="btn btn--secundario ver-mas" data-ver-mas>Ver los ${regs.length} más recientes</button>` : ''}`;
+
+  const POR_PAGINA = 25;
+  function serviciosHTML(regs, total) {
+    if (!regs || !regs.length) return '<p class="vacio">Sin servicios en este periodo</p>';
+    return `<div class="servicios" data-lista></div>
+      <div class="lista-pie">
+        <p class="lista-pie__texto" data-lista-texto></p>
+        <div class="lista-pie__botones" data-lista-botones>
+          <button type="button" class="btn btn--secundario" data-cargar="mas">Cargar ${POR_PAGINA} más</button>
+          <button type="button" class="btn btn--secundario" data-cargar="todos">Cargar todos (${num(total)})</button>
+        </div>
+      </div>`;
+  }
+
+  // Pinta la lista y trae más servicios del servidor cuando hace falta
+  function pintarLista() {
+    const L = estado.lista;
+    const $l = document.querySelector('[data-lista]');
+    if (!L || !$l) return;
+    $l.innerHTML = L.items.slice(0, L.visibles).map((r) => tarjeta(r, L.modulo)).join('');
+    const mostrados = Math.min(L.visibles, L.items.length);
+    const $t = document.querySelector('[data-lista-texto]');
+    if ($t) $t.textContent = L.cargando ? L.cargando : `Mostrando ${num(mostrados)} de ${num(L.total)}`;
+    const $b = document.querySelector('[data-lista-botones]');
+    if ($b) $b.hidden = mostrados >= L.total;
+    document.querySelectorAll('[data-cargar]').forEach((b) => (b.disabled = !!L.cargando));
+  }
+
+  async function cargarLista(cuantos) {
+    const L = estado.lista;
+    if (!L || L.cargando) return;
+    const meta = Math.min(L.total, cuantos === 'todos' ? L.total : L.visibles + POR_PAGINA);
+    try {
+      while (L.items.length < meta) {
+        if (estado.lista !== L) return; // cambió el filtro o la pestaña
+        L.cargando = `Cargando ${num(L.items.length)} de ${num(meta)}…`;
+        pintarLista();
+        const res = await pedir('resumen', { ...L.params, lista: '1', desde: String(L.items.length), cuantos: String(Math.min(500, meta - L.items.length)) });
+        if (!res.registros || !res.registros.length) break;
+        L.items.push(...res.registros);
+        L.total = res.total;
+      }
+      L.cargando = '';
+      L.visibles = meta;
+    } catch (e) {
+      L.cargando = '';
+      L.visibles = L.items.length;
+      if (estado.lista === L) {
+        pintarLista();
+        const $t = document.querySelector('[data-lista-texto]');
+        if ($t) $t.textContent = `${e.message}. Se muestran ${num(L.items.length)} de ${num(L.total)}.`;
+        return;
+      }
+    }
+    if (estado.lista === L) pintarLista();
   }
 
   /* ---------------- pantallas ---------------- */
@@ -608,14 +673,29 @@
     const $calor = $datos.querySelector('[data-chart="calor"]');
     if ($calor) G.calor($calor, d.heatmap || [], unidad);
 
-    $datos.querySelector('[data-ver-mas]')?.addEventListener('click', (e) => {
-      $datos.querySelector('[data-resto]').hidden = false;
-      e.currentTarget.remove();
+    estado.lista = { modulo, params: paramsModulo(modulo), items: (d.registros || []).slice(), total: d.total, visibles: 10, cargando: '' };
+    pintarLista();
+    $datos.querySelectorAll('[data-cargar]').forEach((b) => b.addEventListener('click', () => cargarLista(b.dataset.cargar)));
+    $datos.querySelector('[data-lluvia]')?.addEventListener('click', () => {
+      estado.lluvia = !estado.lluvia;
+      guardar('pc.lluvia', estado.lluvia || null);
+      cargarModulo('operativo');
+      if (estado.lluvia) document.getElementById('activos')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     });
     $datos.querySelectorAll('[data-vista-tipos]').forEach((b) => b.addEventListener('click', () => {
       estado.vistaTipos = b.dataset.vistaTipos;
       pintarDatos(modulo, estado.datos);
     }));
+  }
+
+  function lluviaKPI(d) {
+    const activo = estado.lluvia;
+    return `<button type="button" class="card kpi kpi--accion${activo ? ' is-activo' : ''}" data-lluvia aria-pressed="${activo}">
+      <span class="kpi__label">Por lluvias</span>
+      <span class="kpi__fila"><span class="kpi__valor num">${num(d.por_lluvia)}</span>${activo ? '' : G.anillo(d.pct_lluvia || 0, '#d95926', '#4a2617')}</span>
+      <span class="kpi__sub">${activo ? 'Mostrando solo servicios por lluvia' : `${d.pct_lluvia || 0}% del total`}</span>
+      <span class="kpi__accion">${activo ? 'Quitar filtro ✕' : 'Ver estos servicios ›'}</span>
+    </button>`;
   }
 
   function operativoHTML(d) {
@@ -627,7 +707,7 @@
     return `
       ${heroHTML('Servicios operativos', d, 'servicios')}
       <div class="grid-kpi">
-        ${kpi('Por lluvias', num(d.por_lluvia), `${d.pct_lluvia || 0}% del total`, G.anillo(d.pct_lluvia || 0, '#d95926', '#4a2617'))}
+        ${lluviaKPI(d)}
         ${horaPicoKPI(d)}
         ${diaActivoKPI(d)}
         ${kpi('Colonia con más servicios', col ? esc(vacioSi(col.colonia)) : '—', col ? cuenta(col.total) : 'Sin datos', '', true)}
@@ -635,6 +715,7 @@
       <section class="card">
         ${titulo('¿Cuándo ocurren?', ICON.calor, false, '<span class="card__meta">Día × hora</span>')}
         <div class="chart" data-chart="calor"></div>
+        ${d.sin_hora ? `<p class="card__pie">${notaSinHora(d)}.</p>` : ''}
       </section>
       <div class="grid-2">
         <section class="card">
@@ -659,8 +740,8 @@
         </section>
       </div>
       <section class="card">
-        ${titulo('Últimos servicios', ICON.historial)}
-        ${serviciosHTML(d.registros, 'operativo')}
+        ${titulo(estado.lluvia ? 'Servicios por lluvias' : 'Servicios', ICON.historial, estado.lluvia, '<span class="card__meta">Más recientes primero</span>')}
+        ${serviciosHTML(d.registros, d.total)}
       </section>`;
   }
 
@@ -672,12 +753,13 @@
       <div class="grid-kpi">
         ${kpi('Traslados', num(d.traslados), `${d.pct_traslado || 0}% del total`, G.anillo(d.pct_traslado || 0, '#d95926', '#4a2617'))}
         ${kpi('Atendidos en sitio', num(d.atendidos_en_sitio), `${pctSitio}% del total`, G.anillo(pctSitio, '#3987e5', '#1d3557'))}
-        ${horaPicoKPI(d)}
-        ${diaActivoKPI(d)}
+        ${horaPicoKPI(d, 'atención', 'atenciones')}
+        ${diaActivoKPI(d, 'atención', 'atenciones')}
       </div>
       <section class="card">
         ${titulo('¿Cuándo ocurren?', ICON.calor, false, '<span class="card__meta">Día × hora</span>')}
         <div class="chart" data-chart="calor"></div>
+        ${d.sin_hora ? `<p class="card__pie">${notaSinHora(d)}.</p>` : ''}
       </section>
       <div class="grid-2">
         <section class="card">
@@ -720,8 +802,8 @@
         </section>
       </div>
       <section class="card">
-        ${titulo('Últimos servicios', ICON.historial)}
-        ${serviciosHTML(d.registros, 'medico')}
+        ${titulo('Atenciones', ICON.historial, false, '<span class="card__meta">Más recientes primero</span>')}
+        ${serviciosHTML(d.registros, d.total)}
       </section>`;
   }
 
@@ -774,6 +856,7 @@
    */
   function render(tab) {
     estado.tab = tab;
+    estado.lista = null;
     G.ocultarTip();
     $tabs.forEach((b) => (b.dataset.tab === tab ? b.setAttribute('aria-current', 'page') : b.removeAttribute('aria-current')));
     window.scrollTo(0, 0);

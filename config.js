@@ -4,5 +4,5 @@
 window.PC_CONFIG = {
   API_BASE: 'https://lu34.pythonanywhere.com',
   TOKEN: 'OMLJiYt2RwpL10dlRi8A7GMa',
-  VERSION: '2.0.0',
+  VERSION: '3.0.0',
 };

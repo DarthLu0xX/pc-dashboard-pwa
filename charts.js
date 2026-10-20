@@ -112,11 +112,15 @@
     if (n > 1) {
       const d = curva(pts);
       el('path', { d: `${d}L${pts[n - 1][0]},${y(0)}L${pts[0][0]},${y(0)}Z`, fill: `url(#${id})` }, svg);
-      el('path', { d, fill: 'none', stroke: color, 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }, svg);
+      // Si el último periodo va en curso (mes o día actual), ese tramo se dibuja punteado
+      const parcial = puntos[n - 1].parcial && n > 2;
+      const linea = { fill: 'none', stroke: color, 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' };
+      el('path', { ...linea, d: parcial ? curva(pts.slice(0, n - 1)) : d }, svg);
+      if (parcial) el('path', { ...linea, d: `M${pts[n - 2][0]},${pts[n - 2][1]}L${pts[n - 1][0]},${pts[n - 1][1]}`, 'stroke-dasharray': '4 5', opacity: 0.85 }, svg);
     }
     // Punto final (o único) con su valor
     const ult = pts[n - 1];
-    el('circle', { cx: ult[0], cy: ult[1], r: 4, fill: color, stroke: SUPERFICIE, 'stroke-width': 2 }, svg);
+    el('circle', { cx: ult[0], cy: ult[1], r: 4, fill: puntos[n - 1].parcial ? SUPERFICIE : color, stroke: puntos[n - 1].parcial ? color : SUPERFICIE, 'stroke-width': 2 }, svg);
 
     // Etiquetas X: inicio, medio y fin
     const idx = n === 1 ? [0] : n < 5 ? puntos.map((_, i) => i) : [0, Math.floor((n - 1) / 2), n - 1];
