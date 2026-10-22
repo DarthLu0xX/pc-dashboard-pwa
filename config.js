@@ -1,8 +1,7 @@
 // Configuración de la PWA.
-// El token es el de SOLO LECTURA de la PWA (PWA_TOKEN en dashboard/views.py),
-// no el del bot: es público por estar en este archivo, y solo abre /api/pwa/.
+// Ya no hay token público: se entra con contraseña (ver PWA_CLAVES en
+// dashboard/views.py) y el servidor entrega una sesión que se guarda en el celular.
 window.PC_CONFIG = {
   API_BASE: 'https://lu34.pythonanywhere.com',
-  TOKEN: 'OMLJiYt2RwpL10dlRi8A7GMa',
-  VERSION: '5.0.0',
+  VERSION: '6.0.0',
 };

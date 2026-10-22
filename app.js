@@ -12,14 +12,12 @@
   const TIMEOUT_MS = 25000;
   const fmt = new Intl.NumberFormat('es-MX');
 
-  // ?api=, ?token= y ?periodo= solo para pruebas en local
+  // ?api= y ?periodo= solo para pruebas en local
   const qs = new URLSearchParams(location.search);
   if (qs.has('api')) guardar('pc.api', qs.get('api') || null);
-  if (qs.has('token')) guardar('pc.token', qs.get('token') || null);
   if (qs.has('periodo')) guardar('pc.periodo', qs.get('periodo'));
-  if (qs.has('api') || qs.has('token') || qs.has('periodo')) history.replaceState(null, '', location.pathname + location.hash);
+  if (qs.has('api') || qs.has('periodo')) history.replaceState(null, '', location.pathname + location.hash);
   const API_BASE = (leer('pc.api') || CFG.API_BASE).replace(/\/+$/, '');
-  const TOKEN = leer('pc.token') || CFG.TOKEN;
 
   const estado = {
     tab: INICIO,
@@ -31,6 +29,7 @@
     lluvia: leer('pc.lluvia') === true,
     vistaTipos: 'sub',
     lista: null,
+    sesion: leer('pc.sesion'),
     catalogo: leer('pc.catalogo'),
     datos: null,
     cargando: false,
@@ -182,13 +181,14 @@
   /* ---------------- red ---------------- */
   async function pedir(ruta, params = {}) {
     const url = new URL(`${API_BASE}/api/pwa/${ruta}/`);
-    url.searchParams.set('token', TOKEN);
+    url.searchParams.set('sesion', estado.sesion ? estado.sesion.s : '');
     for (const [k, v] of Object.entries(params)) if (v) url.searchParams.set(k, v);
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
     try {
       const res = await fetch(url, { signal: ctrl.signal, cache: 'no-store' });
-      if (!res.ok) throw new Error(res.status === 403 ? 'Token no válido' : `Error del servidor (${res.status})`);
+      if (res.status === 401) { cerrarSesion('Tu sesión venció o fue retirada. Vuelve a entrar.'); throw new Error('Sesión no válida'); }
+      if (!res.ok) throw new Error(`Error del servidor (${res.status})`);
       return await res.json();
     } catch (e) {
       if (e.name === 'AbortError') throw new Error('El servidor tardó demasiado');
@@ -911,7 +911,7 @@
     render(tab);
   }
 
-  window.addEventListener('popstate', (e) => render(e.state?.tab || tabDelHash() || INICIO));
+  window.addEventListener('popstate', (e) => { if (estado.sesion) render(e.state?.tab || tabDelHash() || INICIO); });
 
   function tabDelHash() {
     const t = location.hash.slice(1);
@@ -926,7 +926,7 @@
     if (estado.tab === 'operativo' || estado.tab === 'medico') pintarDatos(estado.tab, estado.datos);
   });
 
-  $tabs.forEach((b) => b.addEventListener('click', () => ir(b.dataset.tab)));
+  $tabs.forEach((b) => b.addEventListener('click', () => { if (estado.sesion) ir(b.dataset.tab); }));
   $btnActualizar.addEventListener('click', async () => {
     if (estado.cargando) return;
     if (estado.tab === 'operativo' || estado.tab === 'medico') {
@@ -943,10 +943,79 @@
   history.replaceState({ tab: INICIO }, '', '#' + INICIO);
   if (inicial !== INICIO) history.pushState({ tab: inicial }, '', '#' + inicial);
 
-  // El catálogo nuevo trae el buscador; si el guardado es viejo (sin él), se pide de nuevo
-  const catalogoListo = cargarCatalogo();
-  if (estado.catalogo && estado.catalogo.buscar_operativo) render(inicial);
-  else catalogoListo.then(() => render(estado.tab === INICIO ? inicial : estado.tab));
+  function arrancar(tab) {
+    document.body.classList.remove('sin-sesion');
+    estado.tab = tab; // sale de la pantalla de acceso
+    // El catálogo nuevo trae el buscador; si el guardado es viejo (sin él), se pide de nuevo
+    const catalogoListo = cargarCatalogo();
+    if (estado.catalogo && estado.catalogo.buscar_operativo) render(tab);
+    else catalogoListo.then(() => render(estado.tab));
+  }
+
+  /* ---------------- acceso ---------------- */
+  function mostrarAcceso(aviso = '') {
+    estado.tab = 'acceso';
+    estado.lista = null;
+    document.body.classList.add('sin-sesion');
+    $vista.innerHTML = `
+      <section class="acceso">
+        <img src="icons/icon-192.png" alt="" width="96" height="96">
+        <h1>Tablero ejecutivo</h1>
+        <p>Protección Civil · La Magdalena Contreras</p>
+        <form class="card acceso__form" novalidate>
+          <label class="campo"><span>Contraseña</span>
+            <input class="entrada" type="password" name="clave" autocomplete="current-password" required autofocus>
+          </label>
+          <p class="acceso__error" role="alert">${esc(aviso)}</p>
+          <button type="submit" class="btn">Entrar</button>
+        </form>
+        <p class="acceso__pie">Acceso restringido. Si no tienes contraseña, solicítala a la Dirección.</p>
+      </section>`;
+    const $f = $vista.querySelector('form');
+    const $err = $vista.querySelector('.acceso__error');
+    $f.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const clave = $f.clave.value;
+      if (!clave) { $err.textContent = 'Escribe tu contraseña.'; return; }
+      const $btn = $f.querySelector('button');
+      $btn.disabled = true;
+      $btn.textContent = 'Verificando…';
+      $err.textContent = '';
+      try {
+        const res = await fetch(`${API_BASE}/api/pwa/acceso/`, { method: 'POST', body: new URLSearchParams({ clave }), cache: 'no-store' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || `Error del servidor (${res.status})`);
+        estado.sesion = { s: data.sesion, nombre: data.nombre };
+        guardar('pc.sesion', estado.sesion);
+        history.replaceState({ tab: INICIO }, '', '#' + INICIO);
+        arrancar(INICIO);
+      } catch (e2) {
+        $err.textContent = e2 instanceof TypeError ? 'Sin conexión con el servidor.' : e2.message;
+        $btn.disabled = false;
+        $btn.textContent = 'Entrar';
+        $f.clave.select();
+      }
+    });
+  }
+
+  // Al salir (o si la sesión vence) se borra del celular todo lo guardado
+  function cerrarSesion(aviso = '') {
+    Object.keys(localStorage).filter((k) => k.startsWith('pc.') && k !== 'pc.api').forEach((k) => {
+      try { localStorage.removeItem(k); } catch { /* sin acceso */ }
+    });
+    estado.sesion = null;
+    estado.catalogo = null;
+    estado.datos = null;
+    mostrarAcceso(aviso);
+  }
+
+  document.getElementById('btn-salir').addEventListener('click', () => {
+    if (confirm('¿Cerrar sesión? Se borrarán del celular los datos guardados.')) cerrarSesion();
+  });
+
+  // Sin sesión (o recién actualizada desde la versión sin contraseña): se limpia lo guardado
+  if (estado.sesion && estado.sesion.s) arrancar(inicial);
+  else cerrarSesion();
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
