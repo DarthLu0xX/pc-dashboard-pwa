@@ -3,5 +3,5 @@
 // dashboard/views.py) y el servidor entrega una sesión que se guarda en el celular.
 window.PC_CONFIG = {
   API_BASE: 'https://lu34.pythonanywhere.com',
-  VERSION: '6.1.0',
+  VERSION: '6.2.0',
 };

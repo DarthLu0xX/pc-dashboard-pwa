@@ -1,15 +1,15 @@
 // Service worker: guarda la "cáscara" de la app para que abra sin internet.
 // Los datos NO pasan por aquí: app.js los guarda en localStorage.
 // Subir CACHE en cada cambio para que los celulares bajen la versión nueva.
-const CACHE = 'pc-tablero-v7';
+const CACHE = 'pc-tablero-v8';
 const SHELL = [
   './',
   'index.html',
-  'styles.css?v=7',
-  'config.js?v=7',
-  'charts.js?v=7',
-  'informe.js?v=7',
-  'app.js?v=7',
+  'styles.css?v=8',
+  'config.js?v=8',
+  'charts.js?v=8',
+  'informe.js?v=8',
+  'app.js?v=8',
   'manifest.webmanifest',
   'icons/logo-96.png',
   'icons/favicon-32.png',
@@ -45,9 +45,10 @@ self.addEventListener('fetch', (e) => {
 
   if (url.origin !== location.origin) return;
 
-  // Abrir la app: siempre index.html desde la caché si no hay red
+  // Abrir la app: siempre la versión más nueva del servidor (sin la caché de 10 min
+  // de GitHub Pages); sin red, la guardada
   if (req.mode === 'navigate') {
-    e.respondWith(fetch(req).catch(() => caches.match('index.html')));
+    e.respondWith(fetch(req.url, { cache: 'no-cache' }).catch(() => caches.match('index.html')));
     return;
   }
 
