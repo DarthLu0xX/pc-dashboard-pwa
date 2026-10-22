@@ -960,7 +960,7 @@
     $vista.innerHTML = `
       <section class="acceso">
         <img src="icons/icon-192.png" alt="" width="96" height="96">
-        <h1>Tablero ejecutivo</h1>
+        <h1>Inicio de Sesión</h1>
         <p>Protección Civil · La Magdalena Contreras</p>
         <form class="card acceso__form" novalidate>
           <label class="campo"><span>Contraseña</span>
